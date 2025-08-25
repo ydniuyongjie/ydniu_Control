@@ -99,7 +99,7 @@ nets = {
         'layer10': 'cv',
         'layer11': 'cv',
         'layer12': 'cd',
-        'layer13': 'cv',
+        'layer13':  'cv',
         'layer14': 'cv',
         'layer15': 'cv',
         },
@@ -117,7 +117,7 @@ nets = {
         'layer10': 'cv',
         'layer11': 'cv',
         'layer12': 'ad',
-        'layer13': 'cv',
+        'layer13':  'cv',
         'layer14': 'cv',
         'layer15': 'cv',
         },
@@ -135,7 +135,7 @@ nets = {
         'layer10': 'cv',
         'layer11': 'cv',
         'layer12': 'rd',
-        'layer13': 'cv',
+        'layer13':  'cv',
         'layer14': 'cv',
         'layer15': 'cv',
         },
@@ -153,7 +153,7 @@ nets = {
         'layer10': 'cd',
         'layer11': 'cv',
         'layer12': 'cd',
-        'layer13': 'cd',
+        'layer13':  'cd',
         'layer14': 'cd',
         'layer15': 'cv',
         },
@@ -171,7 +171,7 @@ nets = {
         'layer10': 'ad',
         'layer11': 'cv',
         'layer12': 'ad',
-        'layer13': 'ad',
+        'layer13':  'ad',
         'layer14': 'ad',
         'layer15': 'cv',
         },
@@ -189,7 +189,7 @@ nets = {
         'layer10': 'rd',
         'layer11': 'cv',
         'layer12': 'rd',
-        'layer13': 'rd',
+        'layer13':  'rd',
         'layer14': 'rd',
         'layer15': 'cv',
         },
@@ -261,7 +261,7 @@ nets = {
         'layer10': 'rd',
         'layer11': 'cv',
         'layer12': 'cd',
-        'layer13': 'ad',
+        'layer13':  'ad',
         'layer14': 'rd',
         'layer15': 'cv',
         },
@@ -303,7 +303,7 @@ def createConvFunc(op_type):
 
             shape = weights.shape
             if weights.is_cuda:
-                buffer = torch.cuda.FloatTensor(shape[0], shape[1], 5 * 5).fill_(0)
+                buffer = torch.tensor([], dtype=torch.float32, device='cuda').new_empty(shape[0], shape[1], 5 * 5).fill_(0)
             else:
                 buffer = torch.zeros(shape[0], shape[1], 5 * 5)
             weights = weights.view(shape[0], shape[1], -1)
