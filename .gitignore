@@ -127,3 +127,8 @@ venv.bak/
 .mypy_cache/
 .history/
 .vscode/
+coco/
+coco_stuff/
+experiments/
+*.pth
+*.ckpt

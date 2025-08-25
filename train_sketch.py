@@ -27,7 +27,7 @@ from ldm.modules.extra_condition.model_edge import pidinet
 
 def load_model_from_config(config, ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
-    pl_sd = torch.load(ckpt, map_location="cpu")
+    pl_sd = torch.load(ckpt, map_location="cpu",weights_only=False)
     if "global_step" in pl_sd:
         print(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
@@ -86,7 +86,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--bsize",
     type=int,
-    default=8,
+    default=1,
     help="the prompt to render"
 )
 parser.add_argument(
@@ -125,7 +125,7 @@ parser.add_argument(
 parser.add_argument(
         "--ckpt",
         type=str,
-        default="models/sd-v1-4.ckpt",
+        default="models/v1-5-pruned-emaonly.ckpt",
         help="path to checkpoint of model",
 )
 parser.add_argument(
@@ -190,7 +190,7 @@ parser.add_argument(
 )
 parser.add_argument(
         "--gpus",
-        default=[0,1,2,3],
+        default=[0,1],
         help="gpu idx",
 )
 parser.add_argument(
@@ -221,7 +221,6 @@ if __name__ == '__main__':
     init_dist(opt.launcher)
     torch.backends.cudnn.benchmark = True
     device='cuda'
-    torch.cuda.set_device(opt.local_rank)
 
     # dataset
     path_json_train = 'coco_stuff/mask/annotations/captions_train2017.json'
@@ -266,18 +265,16 @@ if __name__ == '__main__':
     # to gpus
     model_ad = torch.nn.parallel.DistributedDataParallel(
         model_ad,
-        device_ids=[opt.local_rank],
-        output_device=opt.local_rank)
+        device_ids=[torch.cuda.current_device()],
+        output_device=torch.cuda.current_device())
     model = torch.nn.parallel.DistributedDataParallel(
         model,
-        device_ids=[opt.local_rank],
-        output_device=opt.local_rank)
-        # device_ids=[torch.cuda.current_device()])
+        device_ids=[torch.cuda.current_device()],
+        output_device=torch.cuda.current_device())
     net_G = torch.nn.parallel.DistributedDataParallel(
         net_G,
-        device_ids=[opt.local_rank],
-        output_device=opt.local_rank)
-        # device_ids=[torch.cuda.current_device()])
+        device_ids=[torch.cuda.current_device()],
+        output_device=torch.cuda.current_device())
 
     # optimizer
     params = list(model_ad.parameters())
