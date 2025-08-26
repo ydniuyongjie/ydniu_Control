@@ -624,16 +624,16 @@ if __name__ == '__main__':
                 
                 # 创建验证损失字典（用于wandb记录）
                 val_loss_dict = {
-                    'val/loss_simple': avg_val_loss_simple,
-                    'val/loss_vlb': avg_val_loss_vlb,
-                    'val/loss': avg_val_loss_total
+                    'val_loss_simple': avg_val_loss_simple,
+                    'val_loss_vlb': avg_val_loss_vlb,
+                    'val_loss': avg_val_loss_total
                 }
                 
                 # 记录简洁的验证损失到日志文件
                 logger.info({
-                    'val/loss_simple': round(avg_val_loss_simple.item(), 6) if hasattr(avg_val_loss_simple, 'item') else round(avg_val_loss_simple, 6),
-                    'val/loss_vlb': round(avg_val_loss_vlb.item(), 6) if hasattr(avg_val_loss_vlb, 'item') else round(avg_val_loss_vlb, 6),
-                    'val/loss': round(avg_val_loss_total.item(), 6) if hasattr(avg_val_loss_total, 'item') else round(avg_val_loss_total, 6)
+                    'val_loss_simple': round(avg_val_loss_simple.item(), 6) if hasattr(avg_val_loss_simple, 'item') else round(avg_val_loss_simple, 6),
+                    'val_loss_vlb': round(avg_val_loss_vlb.item(), 6) if hasattr(avg_val_loss_vlb, 'item') else round(avg_val_loss_vlb, 6),
+                    'val_loss': round(avg_val_loss_total.item(), 6) if hasattr(avg_val_loss_total, 'item') else round(avg_val_loss_total, 6)
                 })
                 
                 # 如果启用了wandb，则记录到wandb
@@ -641,9 +641,9 @@ if __name__ == '__main__':
                     rank, _ = get_dist_info()
                     if rank == 0:
                         wandb.log({
-                            'val/loss_simple': avg_val_loss_simple,
-                            'val/loss_vlb': avg_val_loss_vlb,
-                            'val/loss': avg_val_loss_total
+                            'val_loss_simple': avg_val_loss_simple,
+                            'val_loss_vlb': avg_val_loss_vlb,
+                            'val_loss': avg_val_loss_total
                         }, step=current_iter)
     # 结束wandb会话
     if opt.use_wandb and wandb_available:
