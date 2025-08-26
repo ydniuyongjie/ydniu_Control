@@ -130,5 +130,6 @@ venv.bak/
 coco/
 coco_stuff/
 experiments/
+wandb/
 *.pth
 *.ckpt
