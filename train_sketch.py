@@ -404,18 +404,7 @@ if __name__ == '__main__':
     logger.info(f"  Instantaneous batch size per device = {opt.bsize}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Total optimization steps = {num_update_steps_per_epoch * opt.epochs}")
-    
-    # # 记录训练信息到wandb
-    # if opt.use_wandb and wandb_available:
-    #     rank, _ = get_dist_info()
-    #     if rank == 0:
-    #         wandb.log({
-    #             "training/num_examples": len(train_dataset),
-    #             "training/num_epochs": opt.epochs,
-    #             "training/batch_size_per_device": opt.bsize,
-    #             "training/total_batch_size": total_batch_size,
-    #             "training/total_optimization_steps": num_update_steps_per_epoch * opt.epochs
-    #         })
+
     
     # 初始化进度条
     import torch.distributed as dist
