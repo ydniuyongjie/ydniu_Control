@@ -101,7 +101,7 @@ parser.add_argument(
 parser.add_argument(
     "--epochs",
     type=int,
-    default=2,
+    default=10,
     help="Epochs during training"
 )
 parser.add_argument(

@@ -89,8 +89,8 @@ def gray_mask_2rgb(file_path,target_path, N=183):
 
 if __name__ == '__main__':
 	# colorizer = Colorize(182)
-	file_path = "coco/annotations/train2017"
-	target_path= "coco_stuff/mask/train2017_color/"
+	file_path = "coco/annotations/val2017"
+	target_path= "coco_stuff/mask/val2017_color/"
 	gray_mask_2rgb(file_path, target_path,182)
  	
 	# all_files = _list_image_files_recursively(file_path)
