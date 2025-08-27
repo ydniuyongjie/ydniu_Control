@@ -101,7 +101,7 @@ parser.add_argument(
 parser.add_argument(
     "--epochs",
     type=int,
-    default=10,
+    default=2,
     help="Epochs during training"
 )
 parser.add_argument(
@@ -436,7 +436,8 @@ if __name__ == '__main__':
     for epoch in range(start_epoch, opt.epochs):
         train_dataloader.sampler.set_epoch(epoch)
         # train
-        for batch_idx, data in enumerate(train_dataloader):
+        from itertools import islice
+        for batch_idx, data in enumerate(islice(train_dataloader, 500)):
             # Skip batches if resuming from a specific iteration
             if resume_state is not None and current_iter < resume_iter:
                 # 仅增加current_iter而不处理数据
