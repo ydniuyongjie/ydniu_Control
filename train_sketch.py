@@ -93,13 +93,13 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--bsize",
     type=int,
-    default=1,
+    default=2,
     help="Batch size during training"
 )
 parser.add_argument(
     "--epochs",
     type=int,
-    default=3,
+    default=6,
     help="Epochs during training"
 )
 parser.add_argument(
@@ -214,13 +214,19 @@ parser.add_argument(
 parser.add_argument(
         '--wandb_entity',
         type=str,
-        default=None,
+        default='None',
         help='wandb entity name'
 )
 parser.add_argument(
+        "--instance_name",
+        type=str,
+        default="default",
+        help="Name of the instance in which the program runs, 'e.g.' prior_lora_cat_100_1(prior_adapter_obj_classnum_batch)",
+    )
+parser.add_argument(
         '--wandb_run_id',
         type=str,
-        default=None,
+        default='niu',
         help='wandb run id (if not provided, wandb will generate a random one)'
 )
 opt = parser.parse_args()
