@@ -1,0 +1,41 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [    
+        {
+            "name": "train_sketch",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_sketch.py",
+            "console": "integratedTerminal",
+            "args": [                
+                "--use_wandb",
+                "--instance_name", "sketch",
+            ],
+        },
+        // {
+        //     "name": "accelerate train_sketch",
+        //     "type": "debugpy",
+        //     "request": "launch",
+        //     "module": "accelerate.commands.launch",
+        //     "args": [
+        //         "--multi_gpu",
+        //         "--num_processes=2",
+        //         "train_sketch.py",
+        //         "--launcher",
+        //         "pytorch",
+        //         "--use_wandb",
+        //     ],
+        //     "console": "integratedTerminal"
+        // },
+        {
+            "name": "process_mask",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "ldm/data/preprocess_mask.py",
+            "console": "integratedTerminal"
+        }
+    ]
+}

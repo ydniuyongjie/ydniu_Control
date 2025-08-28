@@ -126,7 +126,6 @@ venv.bak/
 # mypy
 .mypy_cache/
 .history/
-.vscode/
 coco/
 coco_stuff/
 experiments/

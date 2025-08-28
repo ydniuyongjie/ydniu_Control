@@ -214,7 +214,7 @@ parser.add_argument(
 parser.add_argument(
         '--wandb_entity',
         type=str,
-        default='None',
+        default='ydniuyongjie',
         help='wandb entity name'
 )
 parser.add_argument(
@@ -223,12 +223,12 @@ parser.add_argument(
         default="default",
         help="Name of the instance in which the program runs, 'e.g.' prior_lora_cat_100_1(prior_adapter_obj_classnum_batch)",
     )
-parser.add_argument(
-        '--wandb_run_id',
-        type=str,
-        default='None',
-        help='wandb run id (if not provided, wandb will generate a random one)'
-)
+# parser.add_argument(
+#         '--wandb_run_id',
+#         type=str,
+#         default='None',
+#         help='wandb run id (if not provided, wandb will generate a random one)'
+# )
 opt = parser.parse_args()
 
 if __name__ == '__main__':
@@ -246,23 +246,23 @@ if __name__ == '__main__':
             wandb.init(
                 project=opt.wandb_project,
                 entity=opt.wandb_entity,
-                name=opt.name,
+                name=opt.instance_name,
                 id=opt.wandb_run_id,
                 config={
                     "batch_size": opt.bsize,
                     "epochs": opt.epochs,
-                    "learning_rate": config['training']['lr'],
+                    "learning_rate": config['training']['lr'],                   
                 }
             )
         else:
             wandb.init(
                 project=opt.wandb_project,
                 entity=opt.wandb_entity,
-                name=opt.name,
+                name=opt.instance_name,
                 config={
                     "batch_size": opt.bsize,
                     "epochs": opt.epochs,
-                    "learning_rate": config['training']['lr'],
+                    "learning_rate": config['training']['lr'],                    
                 }
             )
 
