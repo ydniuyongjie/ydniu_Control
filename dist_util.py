@@ -21,7 +21,30 @@ def init_dist(launcher, backend='nccl', **kwargs):
 
 def _init_dist_pytorch(backend, **kwargs):
     # Check if RANK environment variable exists
-    rank = int(os.environ['RANK'])
+    if 'RANK' not in os.environ:
+        # 如果RANK环境变量不存在，回退到单GPU模式
+        rank = 0
+        print("Warning: 'RANK' environment variable not set. Falling back to single GPU mode (rank=0).")
+    else:
+        rank = int(os.environ['RANK'])
+    
+    if 'WORLD_SIZE' not in os.environ:
+        # 如果WORLD_SIZE环境变量不存在，回退到单GPU模式
+        world_size = 1
+        print("Warning: 'WORLD_SIZE' environment variable not set. Assuming single GPU mode (world_size=1).")
+    else:
+        world_size = int(os.environ['WORLD_SIZE'])
+    
+    if 'MASTER_ADDR' not in os.environ:
+        os.environ['MASTER_ADDR'] = 'localhost'
+        
+    if 'MASTER_PORT' not in os.environ:
+        os.environ['MASTER_PORT'] = '12355'
+    
+    # 设置环境变量，确保dist.init_process_group能够正确初始化
+    os.environ['RANK'] = str(rank)
+    os.environ['WORLD_SIZE'] = str(world_size)
+    
     num_gpus = torch.cuda.device_count()
     torch.cuda.set_device(rank % num_gpus)
     dist.init_process_group(backend=backend, **kwargs)

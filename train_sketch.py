@@ -18,7 +18,6 @@ from omegaconf import OmegaConf
 from PIL import Image
 
 from ldm.data.dataset_coco import dataset_coco_mask_color
-from dist_util import get_bare_model, get_dist_info, init_dist, master_only
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 from ldm.models.diffusion.plms import PLMSSampler
@@ -53,7 +52,6 @@ def load_model_from_config(config, ckpt, verbose=False):
     model.eval()
     return model
 
-@master_only
 def mkdir_and_rename(path):
     """mkdirs. If path exists, rename it with timestamp and create a new one.
 
@@ -101,7 +99,7 @@ parser.add_argument(
 parser.add_argument(
     "--epochs",
     type=int,
-    default=10,
+    default=3,
     help="Epochs during training"
 )
 parser.add_argument(
@@ -199,28 +197,9 @@ parser.add_argument(
 )
 parser.add_argument(
         "--gpus",
-        default=[0,1],
+        default=[0],
         help="gpu idx",
 )
-parser.add_argument(
-        '--local_rank',
-        default=0,
-        type=int,
-        help='node rank for distributed training'
-)
-parser.add_argument(
-        '--launcher',
-        default='pytorch',
-        type=str,
-        help='node rank for distributed training'
-)
-parser.add_argument(
-        '--l_cond',
-        default=4,
-        type=int,
-        help='number of scales'
-)
-# 添加wandb相关参数
 parser.add_argument(
         '--use_wandb',
         action='store_true',
@@ -250,39 +229,36 @@ if __name__ == '__main__':
     config = OmegaConf.load(f"{opt.config}")
     opt.name = config['name']
 
-    # distributed setting
-    init_dist(opt.launcher)
+    # single GPU setting
     torch.backends.cudnn.benchmark = True
     device='cuda'
 
     # 初始化wandb
     if opt.use_wandb and wandb_available:
-        rank, _ = get_dist_info()
-        if rank == 0:  # 只在主进程中初始化wandb
-            # 如果指定了wandb_run_id，则使用固定的ID，否则使用默认的随机ID
-            if hasattr(opt, 'wandb_run_id') and opt.wandb_run_id:
-                wandb.init(
-                    project=opt.wandb_project,
-                    entity=opt.wandb_entity,
-                    name=opt.name,
-                    id=opt.wandb_run_id,
-                    config={
-                        "batch_size": opt.bsize,
-                        "epochs": opt.epochs,
-                        "learning_rate": config['training']['lr'],
-                    }
-                )
-            else:
-                wandb.init(
-                    project=opt.wandb_project,
-                    entity=opt.wandb_entity,
-                    name=opt.name,
-                    config={
-                        "batch_size": opt.bsize,
-                        "epochs": opt.epochs,
-                        "learning_rate": config['training']['lr'],
-                    }
-                )
+        # 如果指定了wandb_run_id，则使用固定的ID，否则使用默认的随机ID
+        if hasattr(opt, 'wandb_run_id') and opt.wandb_run_id:
+            wandb.init(
+                project=opt.wandb_project,
+                entity=opt.wandb_entity,
+                name=opt.name,
+                id=opt.wandb_run_id,
+                config={
+                    "batch_size": opt.bsize,
+                    "epochs": opt.epochs,
+                    "learning_rate": config['training']['lr'],
+                }
+            )
+        else:
+            wandb.init(
+                project=opt.wandb_project,
+                entity=opt.wandb_entity,
+                name=opt.name,
+                config={
+                    "batch_size": opt.bsize,
+                    "epochs": opt.epochs,
+                    "learning_rate": config['training']['lr'],
+                }
+            )
 
     # dataset
     path_json_train = 'coco_stuff/mask/annotations/captions_train2017.json'
@@ -292,7 +268,6 @@ if __name__ == '__main__':
     root_path_mask='coco_stuff/mask/train2017_color',
     image_size=512
     )
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
     val_dataset = dataset_coco_mask_color(path_json_val,
     root_path_im='coco/val2017',
     root_path_mask='coco_stuff/mask/val2017_color',
@@ -301,10 +276,9 @@ if __name__ == '__main__':
     train_dataloader = torch.utils.data.DataLoader(
             train_dataset,
             batch_size=opt.bsize,
-            shuffle=(train_sampler is None),
+            shuffle=True,
             num_workers=opt.num_workers,
-            pin_memory=True,
-            sampler=train_sampler)
+            pin_memory=True)
     val_dataloader = torch.utils.data.DataLoader(
             val_dataset,
             batch_size=1,
@@ -323,20 +297,6 @@ if __name__ == '__main__':
 
     # sketch encoder
     model_ad = Adapter(channels=[320, 640, 1280, 1280][:4], nums_rb=2, ksize=1, sk=True, use_conv=False).to(device)
-
-    # to gpus
-    model_ad = torch.nn.parallel.DistributedDataParallel(
-        model_ad,
-        device_ids=[torch.cuda.current_device()],
-        output_device=torch.cuda.current_device())
-    model = torch.nn.parallel.DistributedDataParallel(
-        model,
-        device_ids=[torch.cuda.current_device()],
-        output_device=torch.cuda.current_device())
-    net_G = torch.nn.parallel.DistributedDataParallel(
-        net_G,
-        device_ids=[torch.cuda.current_device()],
-        output_device=torch.cuda.current_device())
 
     # optimizer
     params = list(model_ad.parameters())
@@ -360,11 +320,9 @@ if __name__ == '__main__':
         
         # 记录环境信息和配置信息到wandb
         if opt.use_wandb and wandb_available:
-            rank, _ = get_dist_info()
-            if rank == 0:
-                # 将配置信息转换为wandb友好的格式
-                config_dict = OmegaConf.to_container(config, resolve=True)
-                wandb.config.update(config_dict)
+            # 将配置信息转换为wandb友好的格式
+            config_dict = OmegaConf.to_container(config, resolve=True)
+            wandb.config.update(config_dict)
     else:
         # WARNING: should not use get_root_logger in the above codes, including the called functions
         # Otherwise the logger will not be properly initialized
@@ -376,15 +334,13 @@ if __name__ == '__main__':
         
         # 记录环境信息和配置信息到wandb
         if opt.use_wandb and wandb_available:
-            rank, _ = get_dist_info()
-            if rank == 0:
-                # 将配置信息转换为wandb友好的格式
-                config_dict = OmegaConf.to_container(config, resolve=True)
-                wandb.config.update(config_dict)
-                wandb.log({
-                    "resuming/epoch": resume_state['epoch'],
-                    "resuming/iter": resume_state['iter']
-                })
+            # 将配置信息转换为wandb友好的格式
+            config_dict = OmegaConf.to_container(config, resolve=True)
+            wandb.config.update(config_dict)
+            wandb.log({
+                "resuming/epoch": resume_state['epoch'],
+                "resuming/iter": resume_state['iter']
+            })
         
         start_epoch = resume_state['epoch']
         current_iter = start_epoch*len(train_dataloader) # 实际迭代次数从恢复点开始计数
@@ -395,7 +351,7 @@ if __name__ == '__main__':
 
     # 计算总批次数
     num_update_steps_per_epoch = math.ceil(len(train_dataloader))
-    total_batch_size = opt.bsize * torch.distributed.get_world_size() if torch.distributed.is_initialized() else opt.bsize
+    total_batch_size = opt.bsize
     
     # 显示训练信息
     logger.info("***** Running training *****")
@@ -407,19 +363,11 @@ if __name__ == '__main__':
 
     
     # 初始化进度条
-    import torch.distributed as dist
     total_steps = num_update_steps_per_epoch * opt.epochs
-    if dist.is_available() and dist.is_initialized():
-        progress_bar = tqdm(
-            range(0, total_steps),
-            desc="Steps",
-            disable=not (dist.get_rank() == 0),  # 只在主进程中显示进度条
-        )
-    else:
-        progress_bar = tqdm(
-            range(0, total_steps),
-            desc="Steps",
-        )
+    progress_bar = tqdm(
+        range(0, total_steps),
+        desc="Steps",
+    )
     
     # 如果是恢复训练，更新进度条的初始位置
     if resume_iter > 0:
@@ -434,7 +382,6 @@ if __name__ == '__main__':
     
     
     for epoch in range(start_epoch, opt.epochs):
-        train_dataloader.sampler.set_epoch(epoch)
         # train
         from itertools import islice
         for batch_idx, data in enumerate(islice(train_dataloader, 500)):
@@ -450,9 +397,9 @@ if __name__ == '__main__':
                 edge = net_G(data['im'].cuda(non_blocking=True))[-1]
                 edge = edge>0.5
                 edge = edge.float()
-                c = model.module.get_learned_conditioning(data['sentence'])
-                z = model.module.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
-                z = model.module.get_first_stage_encoding(z)
+                c = model.get_learned_conditioning(data['sentence'])
+                z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
+                z = model.get_first_stage_encoding(z)
 
             optimizer.zero_grad()
             model.zero_grad()
@@ -476,27 +423,21 @@ if __name__ == '__main__':
                 
                 # 记录到wandb
                 if opt.use_wandb and wandb_available:
-                    rank, _ = get_dist_info()
-                    if rank == 0:
-                        # 将损失字典中的键名转换为wandb友好的格式
-                        wandb_loss_dict = {}
-                        for key, value in loss_dict.items():
-                            wandb_loss_dict[f"train/{key}"] = value.item() if hasattr(value, 'item') else value
-                        wandb.log(wandb_loss_dict, step=current_iter)
+                    # 将损失字典中的键名转换为wandb友好的格式
+                    wandb_loss_dict = {}
+                    for key, value in loss_dict.items():
+                        wandb_loss_dict[f"train/{key}"] = value.item() if hasattr(value, 'item') else value
+                    wandb.log(wandb_loss_dict, step=current_iter)
                 # 更新进度条显示
                 progress_bar.set_postfix(**clean_loss_dict)
 
             # save checkpoint
-            rank, _ = get_dist_info()
-            if (rank==0) and ((current_iter+1)%config['training']['save_freq'] == 0):
+            if (current_iter+1)%config['training']['save_freq'] == 0:
                 save_filename = f'model_ad_{current_iter+1}.pth'
                 save_path = os.path.join(experiments_root, 'models', save_filename)
+                state_dict = model_ad.state_dict()
                 save_dict = {}
-                model_ad_bare = get_bare_model(model_ad)
-                state_dict = model_ad_bare.state_dict()
                 for key, param in state_dict.items():
-                    if key.startswith('module.'):  # remove unnecessary 'module.'
-                        key = key[7:]
                     save_dict[key] = param.cpu()
                 torch.save(save_dict, save_path)
             # save state
@@ -517,42 +458,39 @@ if __name__ == '__main__':
                     }, step=current_iter)
 
         # val
-        rank, _ = get_dist_info()
-        if rank==0:
+        if True:  # Always run validation for single GPU training
             # 初始化验证损失累积变量
             val_loss_simple = 0.0
             val_loss_vlb = 0.0
             val_loss_total = 0.0
-            val_sample_count = 0
-            
+                        
             for data in val_dataloader:
                 with torch.no_grad():
                     # 计算验证损失
                     edge = net_G(data['im'].cuda(non_blocking=True))[-1]
                     edge = edge>0.5
                     edge = edge.float()
-                    c = model.module.get_learned_conditioning(data['sentence'])
-                    z = model.module.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
-                    z = model.module.get_first_stage_encoding(z)
+                    c = model.get_learned_conditioning(data['sentence'])
+                    z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
+                    z = model.get_first_stage_encoding(z)
                     features_adapter = model_ad(edge)
                     
                     # 计算验证损失
                     val_loss, val_loss_dict = model(z, c=c, features_adapter=features_adapter)
                     
                     # 累积验证损失
-                    val_loss_simple += val_loss_dict.get('loss_simple', val_loss).item()
-                    val_loss_vlb += val_loss_dict.get('loss_vlb', torch.tensor(0.0)).item()
-                    val_loss_total += val_loss.item()
-                    val_sample_count += 1
+                    val_loss_simple = val_loss_dict.get('loss_simple', val_loss).item()
+                    val_loss_vlb = val_loss_dict.get('loss_vlb', torch.tensor(0.0)).item()
+                    val_loss_total = val_loss.item()
                     
                     if opt.dpm_solver:
-                        sampler = DPMSolverSampler(model.module)
+                        sampler = DPMSolverSampler(model)
                     elif opt.plms:
-                        sampler = PLMSSampler(model.module)
+                        sampler = PLMSSampler(model)
                     else:
-                        sampler = DDIMSampler(model.module)
+                        sampler = DDIMSampler(model)
                     print(data['im'].shape)
-                    c = model.module.get_learned_conditioning(data['sentence'])
+                    c = model.get_learned_conditioning(data['sentence'])
                     edge = net_G(data['im'].cuda(non_blocking=True))[-1]
                     edge = edge>0.5
                     edge = edge.float()
@@ -561,16 +499,14 @@ if __name__ == '__main__':
                     
                     # 如果启用了wandb，则将边缘图像记录到wandb
                     if opt.use_wandb and wandb_available:
-                        rank, _ = get_dist_info()
-                        if rank == 0:
-                            # 将边缘图像转换为wandb.Image格式
-                            wandb_edge_image = wandb.Image(
-                                im_edge, 
-                                caption=f"Edge image at epoch {epoch}"
-                            )
-                            wandb.log({
-                                f"val/edge_image_e{epoch:04d}": wandb_edge_image
-                            }, step=current_iter)
+                        # 将边缘图像转换为wandb.Image格式
+                        wandb_edge_image = wandb.Image(
+                            im_edge, 
+                            caption=f"Edge image at epoch {epoch}"
+                        )
+                        wandb.log({
+                            f"val/edge_image_e{epoch:04d}": wandb_edge_image
+                        }, step=current_iter)
                     features_adapter = model_ad(edge)
                     shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
                     samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
@@ -579,11 +515,11 @@ if __name__ == '__main__':
                                                         shape=shape,
                                                         verbose=False,
                                                         unconditional_guidance_scale=opt.scale,
-                                                        unconditional_conditioning=model.module.get_learned_conditioning(opt.n_samples * [""]),
+                                                        unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
                                                         eta=opt.ddim_eta,
                                                         x_T=None,
                                                         features_adapter=features_adapter)
-                    x_samples_ddim = model.module.decode_first_stage(samples_ddim)
+                    x_samples_ddim = model.decode_first_stage(samples_ddim)
                     x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                     x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
                     for id_sample, x_sample in enumerate(x_samples_ddim):
@@ -594,52 +530,18 @@ if __name__ == '__main__':
                         
                         # 如果启用了wandb，则将生成的图像记录到wandb
                         if opt.use_wandb and wandb_available:
-                            rank, _ = get_dist_info()
-                            if rank == 0:
-                                # 将生成的图像转换为wandb.Image格式
-                                wandb_image = wandb.Image(
-                                    img[:, :, ::-1], 
-                                    caption=f"Epoch {epoch} Sample {id_sample}: {data['sentence'][0]}"
-                                )
-                                wandb.log({
-                                    f"val/generated_image_e{epoch:04d}_s{id_sample:04d}": wandb_image
-                                }, step=current_iter)
+                            # 将生成的图像转换为wandb.Image格式
+                            wandb_image = wandb.Image(
+                                img[:, :, ::-1], 
+                                caption=f"Epoch {epoch} Sample {id_sample}: {data['sentence'][0]}"
+                            )
+                            wandb.log({
+                                f"val/generated_image_e{epoch:04d}_s{id_sample:04d}": wandb_image
+                            }, step=current_iter)
                     break
-
-            # 计算平均验证损失
-            if val_sample_count > 0:
-                avg_val_loss_simple = val_loss_simple / val_sample_count
-                avg_val_loss_vlb = val_loss_vlb / val_sample_count
-                avg_val_loss_total = val_loss_total / val_sample_count
-                
-                # 创建验证损失字典（用于wandb记录）
-                val_loss_dict = {
-                    'val_loss_simple': avg_val_loss_simple,
-                    'val_loss_vlb': avg_val_loss_vlb,
-                    'val_loss': avg_val_loss_total
-                }
-                
-                # 记录简洁的验证损失到日志文件
-                logger.info({
-                    'val_loss_simple': round(avg_val_loss_simple.item(), 6) if hasattr(avg_val_loss_simple, 'item') else round(avg_val_loss_simple, 6),
-                    'val_loss_vlb': round(avg_val_loss_vlb.item(), 6) if hasattr(avg_val_loss_vlb, 'item') else round(avg_val_loss_vlb, 6),
-                    'val_loss': round(avg_val_loss_total.item(), 6) if hasattr(avg_val_loss_total, 'item') else round(avg_val_loss_total, 6)
-                })
-                
-                # 如果启用了wandb，则记录到wandb
-                if opt.use_wandb and wandb_available:
-                    rank, _ = get_dist_info()
-                    if rank == 0:
-                        wandb.log({
-                            'val_loss_simple': avg_val_loss_simple,
-                            'val_loss_vlb': avg_val_loss_vlb,
-                            'val_loss': avg_val_loss_total
-                        }, step=current_iter)
     # 结束wandb会话
     if opt.use_wandb and wandb_available:
-        rank, _ = get_dist_info()
-        if rank == 0:
-            wandb.finish()
+        wandb.finish()
             
     # 关闭进度条
     progress_bar.close()
