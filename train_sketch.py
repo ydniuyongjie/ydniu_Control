@@ -226,7 +226,7 @@ parser.add_argument(
 parser.add_argument(
         '--wandb_run_id',
         type=str,
-        default='niu',
+        default='None',
         help='wandb run id (if not provided, wandb will generate a random one)'
 )
 opt = parser.parse_args()
