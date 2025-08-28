@@ -117,7 +117,7 @@ parser.add_argument(
 parser.add_argument(
         "--dpm_solver",
         action='store_true',
-        help="use dpm_solver sampling",
+        help="use dpm_solver sampling,DPM (Diffusion Probabilistic Models) Solver 是一种用于扩散模型采样的快速算法",
 )
 parser.add_argument(
         "--plms",
