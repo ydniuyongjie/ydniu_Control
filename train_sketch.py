@@ -69,25 +69,30 @@ def mkdir_and_rename(path):
 
 def load_resume_state(opt):
     resume_state_path = None
+    resume_ckpt_path =None
     if opt.auto_resume:
         state_path = osp.join('experiments', opt.name, 'training_states')
+        ckpt_path = osp.join('experiments', opt.name, 'models')
         if osp.isdir(state_path):
             states = list(scandir(state_path, suffix='state', recursive=False, full_path=False))
             if len(states) != 0:
                 states = [float(v.split('.state')[0]) for v in states]
                 resume_state_path = osp.join(state_path, f'{max(states):.0f}.state')
-                opt.resume_state_path = resume_state_path
-    # else:
-    #     if opt['path'].get('resume_state'):
-    #         resume_state_path = opt['path']['resume_state']
-
+        if osp.isdir(ckpt_path):
+            ckpts = list(scandir(ckpt_path, suffix='pth', recursive=False, full_path=False))
+            if len(ckpts) != 0:
+                ckpts = [float(v.split('.pth')[0].rsplit('_',1)[-1]) for v in ckpts]
+                resume_ckpt_path = osp.join(ckpt_path, f'model_ad_{max(ckpts):.0f}.pth')
     if resume_state_path is None:
         resume_state = None
+    if resume_ckpt_path is None:
+        resume_ckpt = None
     else:
         device_id = torch.cuda.current_device()
         resume_state = torch.load(resume_state_path, map_location=lambda storage, loc: storage.cuda(device_id))
+        resume_ckpt= torch.load(resume_ckpt_path, map_location=lambda storage, loc: storage.cuda(device_id))
         # check_resume(opt, resume_state['iter'])
-    return resume_state
+    return resume_state,resume_ckpt
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -311,60 +316,47 @@ if __name__ == '__main__':
     experiments_root = osp.join('experiments', opt.name)
 
     # resume state
-    resume_state = load_resume_state(opt)
-    if resume_state is None:
+    resume_state,resume_ckpt = load_resume_state(opt)
+    if resume_state is None or resume_ckpt is None:
         mkdir_and_rename(experiments_root)
         start_epoch = 0
         current_iter = 0
-        resume_iter = 0  # 新开始训练，无需跳过任何数据
         # WARNING: should not use get_root_logger in the above codes, including the called functions
         # Otherwise the logger will not be properly initialized
         log_file = osp.join(experiments_root, f"train_{opt.name}_{get_time_str()}.log")
         logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
-        # logger.info(get_env_info())
-        # logger.info(dict2str(config))
-        
-        # 记录环境信息和配置信息到wandb
-        if opt.use_wandb and wandb_available:
-            # 将配置信息转换为wandb友好的格式
-            config_dict = OmegaConf.to_container(config, resolve=True)
-            wandb.config.update(config_dict)
-    else:
+        logger.info(get_env_info())
+        logger.info(dict2str(config))
+    if resume_state is not None and resume_ckpt is not None :
         # WARNING: should not use get_root_logger in the above codes, including the called functions
         # Otherwise the logger will not be properly initialized
         log_file = osp.join(experiments_root, f"train_{opt.name}_{get_time_str()}.log")
         logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
-        # logger.info(get_env_info())
+        logger.info(get_env_info())
         # logger.info(dict2str(config))
-        # logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")
-        
-        # 记录环境信息和配置信息到wandb
-        if opt.use_wandb and wandb_available:
-            # 将配置信息转换为wandb友好的格式
-            config_dict = OmegaConf.to_container(config, resolve=True)
-            wandb.config.update(config_dict)
-            wandb.log({
-                "resuming/epoch": resume_state['epoch'],
-                "resuming/iter": resume_state['iter']
-            })
+        logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")   
         
         start_epoch = resume_state['epoch']
-        current_iter = start_epoch*len(train_dataloader) # 实际迭代次数从恢复点开始计数
-        resume_iter = resume_state['iter']   # 需要跳过到这个迭代次数
+        current_iter = resume_state['iter'] # 实际迭代次数从恢复点开始计数        
+        # 加载优化器状态
+        optimizer.load_state_dict(resume_state['optimizers'])
+        logger.info("Training has resumed.So loaded optimizer state")
+        model_ad.load_state_dict(resume_ckpt)
+        logger.info("Training has resumed.So Loaded model_ad state")
 
     # copy the yml file to the experiment root
     copy_opt_file(opt.config, experiments_root)
 
     # 计算总批次数
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader))
-    total_batch_size = opt.bsize
+    num_update_steps_per_epoch = math.ceil(500) #math.ceil(len(train_dataloader))
+
     
     # 显示训练信息
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {opt.epochs}")
     logger.info(f"  Instantaneous batch size per device = {opt.bsize}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {opt.bsize}")
     logger.info(f"  Total optimization steps = {num_update_steps_per_epoch * opt.epochs}")
 
     
@@ -376,25 +368,23 @@ if __name__ == '__main__':
     )
     
     # 如果是恢复训练，更新进度条的初始位置
-    if resume_iter > 0:
-        progress_bar.update(resume_iter)
-        logger.info(f"Resuming training from iteration {resume_iter}. Total iterations: {total_steps}. Remaining iterations: {total_steps - resume_iter}")
+    if current_iter > 0:
+        progress_bar.update(current_iter)
+        logger.info(f"Resuming training from iteration {current_iter}. Total iterations: {total_steps}. Remaining iterations: {total_steps - current_iter}")
     else:
         logger.info(f'Start training from epoch: {start_epoch}, iter: {current_iter}. Total iterations: {total_steps}')
 
     
-    # training
-    
-    
-    
+    # training    
+    start_iter= current_iter - start_epoch * num_update_steps_per_epoch
     for epoch in range(start_epoch, opt.epochs):
         # train
         from itertools import islice
+        
         for batch_idx, data in enumerate(islice(train_dataloader, 500)):
             # Skip batches if resuming from a specific iteration
-            if resume_state is not None and current_iter < resume_iter:
-                # 仅增加current_iter而不处理数据
-                current_iter += 1
+            # 跳过已完成的迭代（关键！恢复时避免重复训练）
+            if epoch == start_epoch and batch_idx < start_iter:
                 continue
                 
             # 正常训练流程
@@ -447,22 +437,17 @@ if __name__ == '__main__':
                     save_dict[key] = param.cpu()
                 torch.save(save_dict, save_path)
             # save state
-                state = {'epoch': epoch, 'iter': current_iter+1, 'optimizers': optimizer.state_dict()}
+                state = {'epoch': epoch, 
+                         'iter': current_iter+1, 
+                         'optimizers': optimizer.state_dict()
+                         }
                 save_filename = f'{current_iter+1}.state'
                 save_path = os.path.join(experiments_root, 'training_states', save_filename)
                 torch.save(state, save_path)
                 
                 # 记录检查点保存信息到日志
-                # logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter+1}")
-                
-                # 记录检查点保存信息到wandb
-                if opt.use_wandb and wandb_available:
-                    wandb.log({
-                        "checkpoint/saved": 1,
-                        "checkpoint/epoch": epoch,
-                        "checkpoint/iter": current_iter+1
-                    }, step=current_iter)
-
+                logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter+1}")                
+               
         # val
         if True:  # Always run validation for single GPU training
             # 初始化验证损失累积变量
