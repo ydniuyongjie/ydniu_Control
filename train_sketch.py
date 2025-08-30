@@ -326,7 +326,7 @@ if __name__ == '__main__':
         log_file = osp.join(experiments_root, f"train_{opt.name}_{get_time_str()}.log")
         logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
         logger.info(get_env_info())
-        logger.info(dict2str(config))
+        # logger.info(dict2str(config))
     if resume_state is not None and resume_ckpt is not None :
         # WARNING: should not use get_root_logger in the above codes, including the called functions
         # Otherwise the logger will not be properly initialized
