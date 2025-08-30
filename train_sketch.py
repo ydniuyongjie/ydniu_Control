@@ -530,9 +530,19 @@ if __name__ == '__main__':
                                 f"val/generated_image_e{epoch:04d}_s{id_sample:04d}": wandb_image
                             }, step=current_iter)
                     break
+    # 关闭进度条
+    progress_bar.close()
+    # 保存模型
+    # 添加最终模型保存代码（位置1）
+    save_filename = f'model_ad_final.pth'
+    save_path = os.path.join(experiments_root, 'models', save_filename)
+    state_dict = model_ad.state_dict()
+    save_dict = {}
+    for key, param in state_dict.items():
+        save_dict[key] = param.cpu()
+    torch.save(save_dict, save_path)
+    logger.info(f"Saved final model at the end of training")
     # 结束wandb会话
     if opt.use_wandb and wandb_available:
         wandb.finish()
             
-    # 关闭进度条
-    progress_bar.close()
