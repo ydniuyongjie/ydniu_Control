@@ -59,14 +59,14 @@ def mkdir_and_rename(path):
     Args:
         path (str): Folder path.
     """
-    if osp.exists(path):
-        new_name = path + '_archived_' + get_time_str()
-        print(f'Path already exists. Rename it to {new_name}', flush=True)
-        os.rename(path, new_name)
+    # if osp.exists(path):
+    #     new_name = path + '_archived_' + get_time_str()
+    #     print(f'Path already exists. Rename it to {new_name}', flush=True)
+    #     os.rename(path, new_name)
     os.makedirs(path, exist_ok=True)
-    os.makedirs(osp.join(experiments_root, 'models'))
-    os.makedirs(osp.join(experiments_root, 'training_states'))
-    os.makedirs(osp.join(experiments_root, 'visualization'))
+    os.makedirs(osp.join(path, 'models'), exist_ok=True)
+    os.makedirs(osp.join(path, 'training_states'), exist_ok=True)
+    os.makedirs(osp.join(path, 'visualization'), exist_ok=True)
 
 def load_resume_state(opt):
     resume_state_path = None
@@ -238,9 +238,9 @@ parser.add_argument(
 opt = parser.parse_args()
 
 if __name__ == '__main__':
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
+    # torch.manual_seed(42)
+    # random.seed(42)
+    # np.random.seed(42)
     config = OmegaConf.load(f"{opt.config}")
     opt.name = config['name']
 
@@ -280,12 +280,12 @@ if __name__ == '__main__':
     path_json_val = 'coco_stuff/mask/annotations/captions_val2017.json'
     train_dataset = dataset_coco_mask_color(path_json_train,
     root_path_im='coco/train2017',
-    root_path_mask='coco_stuff/mask/train2017_color',
+    # root_path_mask='coco_stuff/mask/train2017_color',
     image_size=512
     )
     val_dataset = dataset_coco_mask_color(path_json_val,
     root_path_im='coco/val2017',
-    root_path_mask='coco_stuff/mask/val2017_color',
+    # root_path_mask='coco_stuff/mask/val2017_color',
     image_size=512
     )
     train_dataloader = torch.utils.data.DataLoader(
@@ -352,7 +352,7 @@ if __name__ == '__main__':
     copy_opt_file(opt.config, experiments_root)
 
     # 计算总批次数
-    num_update_steps_per_epoch = math.ceil(500) #math.ceil(len(train_dataloader))
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader)) #math.ceil(500)
 
     
     # 显示训练信息
@@ -383,9 +383,9 @@ if __name__ == '__main__':
     start_iter= current_iter - start_epoch * num_update_steps_per_epoch
     for epoch in range(start_epoch, opt.epochs):
         # train
-        from itertools import islice
+        # from itertools import islice
         
-        for batch_idx, data in enumerate(islice(train_dataloader, 500)):
+        for batch_idx, data in enumerate(train_dataloader):#enumerate(islice(train_dataloader, 500)):
             # Skip batches if resuming from a specific iteration
             # 跳过已完成的迭代（关键！恢复时避免重复训练）
             if epoch == start_epoch and batch_idx < start_iter:

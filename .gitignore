@@ -130,5 +130,6 @@ coco/
 coco_stuff/
 experiments/
 wandb/
+models/
 *.pth
 *.ckpt
