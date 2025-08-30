@@ -10,6 +10,7 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import random
 import torch.nn as nn
 from basicsr.utils import (get_env_info, get_root_logger, get_time_str,
                            img2tensor, scandir, tensor2img)
@@ -237,6 +238,9 @@ parser.add_argument(
 opt = parser.parse_args()
 
 if __name__ == '__main__':
+    torch.manual_seed(42)
+    random.seed(42)
+    np.random.seed(42)
     config = OmegaConf.load(f"{opt.config}")
     opt.name = config['name']
 
