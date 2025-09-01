@@ -131,5 +131,6 @@ coco_stuff/
 experiments/
 wandb/
 models/
+fill50k/*
 *.pth
 *.ckpt

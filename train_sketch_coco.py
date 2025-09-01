@@ -110,12 +110,6 @@ parser.add_argument(
     help="Epochs during training"
 )
 parser.add_argument(
-    "--val_iter",
-    type=int,
-    default=5000,
-    help="validation frequency"
-)
-parser.add_argument(
     "--num_workers",
     type=int,
     default=8,
@@ -311,7 +305,7 @@ if __name__ == '__main__':
     # use custom dataset by niuyongjie
     train_dataset = MyDataset()
     train_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=opt.bsize, shuffle=True, pin_memory=True)
-    val_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=1, shuffle=False, pin_memory=False)
+    val_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=opt.bsize, shuffle=False, pin_memory=False)
     #-------------------------------------------------------------------
     # edge_generator
     # net_G = pidinet()
@@ -465,90 +459,90 @@ if __name__ == '__main__':
                 # 记录检查点保存信息到日志
                 logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter+1}")                
                
-            # val
-            if (current_iter+1)% opt.val_iter == 0:  # Always run validation for single GPU training
-                # 初始化验证损失累积变量
-                val_loss_simple = 0.0
-                val_loss_vlb = 0.0
-                val_loss_total = 0.0
-                            
-                for data in val_dataloader:
-                    with torch.no_grad():
-                        # 计算验证损失
-                        # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-                        # edge = edge>0.5
-                        # edge = edge.float()
-                        edge = data['edge'].cuda(non_blocking=True)
-                        c = model.get_learned_conditioning(data['sentence'])
-                        z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
-                        z = model.get_first_stage_encoding(z)
-                        features_adapter = model_ad(edge)
+        # val
+        if True:  # Always run validation for single GPU training
+            # 初始化验证损失累积变量
+            val_loss_simple = 0.0
+            val_loss_vlb = 0.0
+            val_loss_total = 0.0
                         
-                        # 计算验证损失
-                        val_loss, val_loss_dict = model(z, c=c, features_adapter=features_adapter)
+            for data in val_dataloader:
+                with torch.no_grad():
+                    # 计算验证损失
+                    # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
+                    # edge = edge>0.5
+                    # edge = edge.float()
+                    edge=data['edge']
+                    c = model.get_learned_conditioning(data['sentence'])
+                    z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
+                    z = model.get_first_stage_encoding(z)
+                    features_adapter = model_ad(edge)
+                    
+                    # 计算验证损失
+                    val_loss, val_loss_dict = model(z, c=c, features_adapter=features_adapter)
+                    
+                    # 累积验证损失
+                    val_loss_simple = val_loss_dict.get('loss_simple', val_loss).item()
+                    val_loss_vlb = val_loss_dict.get('loss_vlb', torch.tensor(0.0)).item()
+                    val_loss_total = val_loss.item()
+                    
+                    if opt.dpm_solver:
+                        sampler = DPMSolverSampler(model)
+                    elif opt.plms:
+                        sampler = PLMSSampler(model)
+                    else:
+                        sampler = DDIMSampler(model)
+                    print(data['im'].shape)
+                    c = model.get_learned_conditioning(data['sentence'])
+                    # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
+                    # edge = edge>0.5
+                    # edge = edge.float()
+                    edge=data['edge']
+                    im_edge = tensor2img(edge)
+                    cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge_%04d.png'%epoch), im_edge)
+                    
+                    # 如果启用了wandb，则将边缘图像记录到wandb
+                    if opt.use_wandb and wandb_available:
+                        # 将边缘图像转换为wandb.Image格式
+                        wandb_edge_image = wandb.Image(
+                            im_edge, 
+                            caption=f"Edge image at epoch {epoch}"
+                        )
+                        wandb.log({
+                            f"val/edge_image_e{epoch:04d}": wandb_edge_image
+                        }, step=current_iter)
+                    features_adapter = model_ad(edge)
+                    shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
+                    samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
+                                                        conditioning=c,
+                                                        batch_size=opt.n_samples,
+                                                        shape=shape,
+                                                        verbose=False,
+                                                        unconditional_guidance_scale=opt.scale,
+                                                        unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
+                                                        eta=opt.ddim_eta,
+                                                        x_T=None,
+                                                        features_adapter=features_adapter)
+                    x_samples_ddim = model.decode_first_stage(samples_ddim)
+                    x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                    x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
+                    for id_sample, x_sample in enumerate(x_samples_ddim):
+                        x_sample = 255.*x_sample
+                        img = x_sample.astype(np.uint8)
+                        img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+                        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, id_sample)), img[:,:,::-1])
                         
-                        # 累积验证损失
-                        val_loss_simple = val_loss_dict.get('loss_simple', val_loss).item()
-                        val_loss_vlb = val_loss_dict.get('loss_vlb', torch.tensor(0.0)).item()
-                        val_loss_total = val_loss.item()
-                        
-                        if opt.dpm_solver:
-                            sampler = DPMSolverSampler(model)
-                        elif opt.plms:
-                            sampler = PLMSSampler(model)
-                        else:
-                            sampler = DDIMSampler(model)
-                        print(data['im'].shape)
-                        c = model.get_learned_conditioning(data['sentence'])
-                        # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-                        # edge = edge>0.5
-                        # edge = edge.float()
-                        edge = data['edge'].cuda(non_blocking=True)
-                        im_edge = tensor2img(edge)
-                        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge_%04d.png'%epoch), im_edge)
-                        
-                        # 如果启用了wandb，则将边缘图像记录到wandb
+                        # 如果启用了wandb，则将生成的图像记录到wandb
                         if opt.use_wandb and wandb_available:
-                            # 将边缘图像转换为wandb.Image格式
-                            wandb_edge_image = wandb.Image(
-                                im_edge, 
-                                caption=f"Edge image at epoch {epoch}"
+                            # 将生成的图像转换为wandb.Image格式
+                            wandb_image = wandb.Image(
+                                img[:, :, ::-1], 
+                                caption=f"Epoch {epoch} Sample {id_sample}: {data['sentence'][0]}"
                             )
                             wandb.log({
-                                f"val/edge_image_e{epoch:04d}": wandb_edge_image
+                                f"val/generated_image_e{epoch:04d}_s{id_sample:04d}": wandb_image
                             }, step=current_iter)
-                        features_adapter = model_ad(edge)
-                        shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
-                        samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
-                                                            conditioning=c,
-                                                            batch_size=opt.n_samples,
-                                                            shape=shape,
-                                                            verbose=False,
-                                                            unconditional_guidance_scale=opt.scale,
-                                                            unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
-                                                            eta=opt.ddim_eta,
-                                                            x_T=None,
-                                                            features_adapter=features_adapter)
-                        x_samples_ddim = model.decode_first_stage(samples_ddim)
-                        x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                        x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
-                        for id_sample, x_sample in enumerate(x_samples_ddim):
-                            x_sample = 255.*x_sample
-                            img = x_sample.astype(np.uint8)
-                            img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-                            cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, id_sample)), img[:,:,::-1])
-                            
-                            # 如果启用了wandb，则将生成的图像记录到wandb
-                            if opt.use_wandb and wandb_available:
-                                # 将生成的图像转换为wandb.Image格式
-                                wandb_image = wandb.Image(
-                                    img[:, :, ::-1], 
-                                    caption=f"Epoch {epoch} Sample {id_sample}: {data['sentence'][0]}"
-                                )
-                                wandb.log({
-                                    f"val/generated_image_e{epoch:04d}_s{id_sample:04d}": wandb_image
-                                }, step=current_iter)
-                        break   
+                    break
     # 关闭进度条
     progress_bar.close()
     # 保存模型
