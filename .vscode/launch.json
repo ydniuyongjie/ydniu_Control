@@ -12,8 +12,8 @@
             "console": "integratedTerminal",
             "args": [                
                 "--use_wandb",
-                "--instance_name",  "sketch",
-                "--ckpt",           "models/v1-5-pruned-emaonly.ckpt",
+                "--instance_name",  "sketch_std",
+                "--ckpt",           "models/v1-5-pruned.ckpt",
                 //stable diffusion checkpoint path
                 // T2I-Adapter 官方推荐基础模型对接的是 v1-5-pruned-emaonly,包含完整的组件(UNet、文本编码器、VAE等) 
             ],
