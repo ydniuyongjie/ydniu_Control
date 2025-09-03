@@ -112,7 +112,7 @@ parser.add_argument(
 parser.add_argument(
     "--val_iter",
     type=int,
-    default=5000,
+    default=500,
     help="validation frequency"
 )
 parser.add_argument(
@@ -396,7 +396,7 @@ if __name__ == '__main__':
     for epoch in range(start_epoch, opt.epochs):
         # train
         # from itertools import islice
-        
+        gen_image_count=0
         for batch_idx, data in enumerate(train_dataloader):#enumerate(islice(train_dataloader, 500)):
             # Skip batches if resuming from a specific iteration
             # 跳过已完成的迭代（关键！恢复时避免重复训练）
@@ -471,6 +471,7 @@ if __name__ == '__main__':
                 val_loss_simple = 0.0
                 val_loss_vlb = 0.0
                 val_loss_total = 0.0
+                gen_image_count+=1
                             
                 for data in val_dataloader:
                     with torch.no_grad():
@@ -536,17 +537,17 @@ if __name__ == '__main__':
                             x_sample = 255.*x_sample
                             img = x_sample.astype(np.uint8)
                             img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-                            cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, id_sample)), img[:,:,::-1])
+                            cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, gen_image_count)), img[:,:,::-1])
                             
                             # 如果启用了wandb，则将生成的图像记录到wandb
                             if opt.use_wandb and wandb_available:
                                 # 将生成的图像转换为wandb.Image格式
                                 wandb_image = wandb.Image(
-                                    img[:, :, ::-1], 
-                                    caption=f"Epoch {epoch} Sample {id_sample}: {data['sentence'][0]}"
+                                    img, 
+                                    caption=f"Epoch {epoch} Sample {gen_image_count}: {data['sentence'][0]}"
                                 )
                                 wandb.log({
-                                    f"val/generated_image_e{epoch:04d}_s{id_sample:04d}": wandb_image
+                                    f"val/generated_image_e{epoch:04d}_s{gen_image_count:04d}": wandb_image
                                 }, step=current_iter)
                         break   
     # 关闭进度条
