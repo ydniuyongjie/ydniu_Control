@@ -473,7 +473,9 @@ if __name__ == '__main__':
                 val_loss_total = 0.0
                 gen_image_count+=1
                             
-                for data in val_dataloader:
+                for idx,data in enumerate(val_dataloader):
+                    # if idx!=2:
+                    #     continue
                     with torch.no_grad():
                         # 计算验证损失
                         # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
