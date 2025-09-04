@@ -402,9 +402,7 @@ if __name__ == '__main__':
             # 跳过已完成的迭代（关键！恢复时避免重复训练）
             if epoch == start_epoch and batch_idx < start_iter:
                 continue
-                
-            # 正常训练流程
-            current_iter += 1
+                        
             with torch.no_grad():
                 # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
                 # edge = edge>0.5
@@ -466,7 +464,7 @@ if __name__ == '__main__':
                 logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter+1}")                
                
             # val
-            if (current_iter+1)% opt.val_iter == 0:  # Always run validation for single GPU training
+            if (current_iter)% opt.val_iter == 0:  # Always run validation for single GPU training
                 # 初始化验证损失累积变量
                 val_loss_simple = 0.0
                 val_loss_vlb = 0.0
@@ -552,6 +550,9 @@ if __name__ == '__main__':
                                     f"val/generated_image_e{epoch:04d}_s{gen_image_count:04d}": wandb_image
                                 }, step=current_iter)
                         break   
+            
+            # 正常训练流程
+            current_iter += 1            
     # 关闭进度条
     progress_bar.close()
     # 保存模型
