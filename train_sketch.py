@@ -395,6 +395,58 @@ if __name__ == '__main__':
     start_iter= current_iter - start_epoch * num_update_steps_per_epoch
     for epoch in range(start_epoch, opt.epochs):
         # train
+        for idx,data in enumerate(val_dataloader):
+            if idx!=2:
+                continue
+            with torch.no_grad():
+                # 计算验证损失
+                # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
+                # edge = edge>0.5
+                # edge = edge.float()
+                edge = data['edge'].cuda(non_blocking=True)
+                c = model.get_learned_conditioning(data['sentence'])
+                z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
+                z = model.get_first_stage_encoding(z)
+                features_adapter = model_ad(edge)
+                features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter]
+                # c*0.0 #取消边缘的影响
+                
+                if opt.dpm_solver:
+                    sampler = DPMSolverSampler(model)
+                elif opt.plms:
+                    sampler = PLMSSampler(model)
+                else:
+                    sampler = DDIMSampler(model)
+                shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
+                samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
+                                                    conditioning=c,
+                                                    batch_size=opt.n_samples,
+                                                    shape=shape,
+                                                    verbose=False,
+                                                    unconditional_guidance_scale=opt.scale,
+                                                    unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
+                                                    eta=opt.ddim_eta,
+                                                    x_T=None,
+                                                    features_adapter=features_adapter)
+                x_samples_ddim = model.decode_first_stage(samples_ddim)
+                x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+                x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
+                for id_sample, x_sample in enumerate(x_samples_ddim):
+                    x_sample = 255.*x_sample
+                    img = x_sample.astype(np.uint8)
+                    img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+                    cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.png'), img[:,:,::-1])
+                    
+                    # 如果启用了wandb，则将生成的图像记录到wandb
+                    if opt.use_wandb and wandb_available:
+                        # 将生成的图像转换为wandb.Image格式
+                        wandb_image = wandb.Image(
+                            img, 
+                            caption=f"origin image from model")
+                        wandb.log({
+                            f"val/origin image": wandb_image
+                        }, step=0)
+                break         
         # from itertools import islice
         gen_image_count=0
         for batch_idx, data in enumerate(train_dataloader):#enumerate(islice(train_dataloader, 500)):
@@ -464,7 +516,7 @@ if __name__ == '__main__':
                 logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter+1}")                
                
             # val
-            if (current_iter)% opt.val_iter == 0:  # Always run validation for single GPU training
+            if (current_iter+1)% opt.val_iter == 0:  # Always run validation for single GPU training
                 # 初始化验证损失累积变量
                 val_loss_simple = 0.0
                 val_loss_vlb = 0.0
@@ -472,8 +524,8 @@ if __name__ == '__main__':
                 gen_image_count+=1
                             
                 for idx,data in enumerate(val_dataloader):
-                    # if idx!=2:
-                    #     continue
+                    if idx!=2:
+                        continue
                     with torch.no_grad():
                         # 计算验证损失
                         # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
