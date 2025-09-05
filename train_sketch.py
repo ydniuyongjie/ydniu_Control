@@ -18,7 +18,7 @@ from basicsr.utils.options import copy_opt_file, dict2str
 from omegaconf import OmegaConf
 from PIL import Image
 
-from ldm.data.dataset_coco import dataset_coco_mask_color
+from ldm.data.dataset_coco import dataset_coco_sketch
 from ldm.models.diffusion.ddim import DDIMSampler
 from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 from ldm.models.diffusion.plms import PLMSSampler
@@ -283,36 +283,37 @@ if __name__ == '__main__':
             )
 
     ################## dataset
-    # path_json_train = 'coco_stuff/mask/annotations/captions_train2017.json'
-    # path_json_val = 'coco_stuff/mask/annotations/captions_val2017.json'
-    # train_dataset = dataset_coco_mask_color(path_json_train,
-    # root_path_im='coco/train2017',
-    # # root_path_mask='coco_stuff/mask/train2017_color',
-    # image_size=512
-    # )
-    # val_dataset = dataset_coco_mask_color(path_json_val,
-    # root_path_im='coco/val2017',
-    # # root_path_mask='coco_stuff/mask/val2017_color',
-    # image_size=512
-    # )
-    # train_dataloader = torch.utils.data.DataLoader(
-    #         train_dataset,
-    #         batch_size=opt.bsize,
-    #         shuffle=True,
-    #         num_workers=opt.num_workers,
-    #         pin_memory=True)
-    # val_dataloader = torch.utils.data.DataLoader(
-    #         val_dataset,
-    #         batch_size=1,
-    #         shuffle=False,
-    #         num_workers=1,
-    #         pin_memory=False)
+    path_json_train = 'coco_stuff/mask/annotations/captions_train2017.json'
+    path_json_val = 'coco_stuff/mask/annotations/captions_val2017.json'
+    train_dataset = dataset_coco_sketch(path_json_train,
+    root_path_im='coco/train2017',
+    root_path_mask='coco_stuff/sketch/train2017_sketch',
+    image_size=512
+    )
+    val_dataset = dataset_coco_sketch(path_json_val,
+    root_path_im='coco/val2017',
+    root_path_mask='coco_stuff/sketch/val2017_sketch',
+    image_size=512
+    )
+    train_dataloader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=opt.bsize,
+            shuffle=True,
+            num_workers=opt.num_workers,
+            pin_memory=True)
+    val_dataloader = torch.utils.data.DataLoader(
+            val_dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=1,
+            pin_memory=False)
     #-------------------------------------------------------------------
     # use custom dataset by niuyongjie
-    train_dataset = MyDataset()
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=opt.bsize, shuffle=True, pin_memory=True)
-    val_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=1, shuffle=False, pin_memory=False)
+    # train_dataset = MyDataset()
+    # train_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=opt.bsize, shuffle=True, pin_memory=True)
+    # val_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=1, shuffle=False, pin_memory=False)
     #-------------------------------------------------------------------
+
     # edge_generator
     # net_G = pidinet()
     # ckp = torch.load('models/table5_pidinet.pth', map_location='cpu')['state_dict']
@@ -408,8 +409,7 @@ if __name__ == '__main__':
                 z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
                 z = model.get_first_stage_encoding(z)
                 features_adapter = model_ad(edge)
-                features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter]
-                # c*0.0 #取消边缘的影响
+                features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0 取消边缘的影响
                 
                 if opt.dpm_solver:
                     sampler = DPMSolverSampler(model)
@@ -459,7 +459,7 @@ if __name__ == '__main__':
                 # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
                 # edge = edge>0.5
                 # edge = edge.float()
-                edge = data['edge'].cuda(non_blocking=True)
+                edge = data['sketch'].cuda(non_blocking=True)
                 c = model.get_learned_conditioning(data['sentence'])
                 z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
                 z = model.get_first_stage_encoding(z)
@@ -531,7 +531,7 @@ if __name__ == '__main__':
                         # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
                         # edge = edge>0.5
                         # edge = edge.float()
-                        edge = data['edge'].cuda(non_blocking=True)
+                        edge = data['sketch'].cuda(non_blocking=True)
                         c = model.get_learned_conditioning(data['sentence'])
                         z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
                         z = model.get_first_stage_encoding(z)
