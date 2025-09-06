@@ -65,6 +65,7 @@ def mkdir_and_rename(path):
     #     print(f'Path already exists. Rename it to {new_name}', flush=True)
     #     os.rename(path, new_name)
     os.makedirs(path, exist_ok=True)
+    os.makedirs(osp.join(path, 'resultckpt'), exist_ok=True)
     os.makedirs(osp.join(path, 'models'), exist_ok=True)
     os.makedirs(osp.join(path, 'training_states'), exist_ok=True)
     os.makedirs(osp.join(path, 'visualization'), exist_ok=True)
@@ -73,8 +74,8 @@ def load_resume_state(opt):
     resume_state_path = None
     resume_ckpt_path =None
     if opt.auto_resume:
-        state_path = osp.join('experiments', opt.name, 'training_states')
-        ckpt_path = osp.join('experiments', opt.name, 'models')
+        state_path = osp.join('experiments', opt.instance_name, 'training_states')
+        ckpt_path = osp.join('experiments', opt.instance_name, 'models')
         if osp.isdir(state_path):
             states = list(scandir(state_path, suffix='state', recursive=False, full_path=False))
             if len(states) != 0:
@@ -282,17 +283,17 @@ if __name__ == '__main__':
                 }
             )
 
-    ################## dataset
+    ################################################ dataset##################################################
     path_json_train = 'coco_stuff/mask/annotations/captions_train2017.json'
     path_json_val = 'coco_stuff/mask/annotations/captions_val2017.json'
     train_dataset = dataset_coco_sketch(path_json_train,
     root_path_im='coco/train2017',
-    root_path_mask='coco_stuff/sketch/train2017_sketch',
+    root_path_sketch='coco_stuff/sketch/train2017_sketch',
     image_size=512
     )
     val_dataset = dataset_coco_sketch(path_json_val,
     root_path_im='coco/val2017',
-    root_path_mask='coco_stuff/sketch/val2017_sketch',
+    root_path_sketch='coco_stuff/sketch/val2017_sketch',
     image_size=512
     )
     train_dataloader = torch.utils.data.DataLoader(
@@ -315,10 +316,10 @@ if __name__ == '__main__':
     #-------------------------------------------------------------------
 
     # edge_generator
-    # net_G = pidinet()
-    # ckp = torch.load('models/table5_pidinet.pth', map_location='cpu')['state_dict']
-    # net_G.load_state_dict({k.replace('module.',''):v for k, v in ckp.items()})
-    # net_G.cuda()
+    net_G = pidinet()
+    ckp = torch.load('models/table5_pidinet.pth', map_location='cpu')['state_dict']
+    net_G.load_state_dict({k.replace('module.',''):v for k, v in ckp.items()})
+    net_G.cuda()
 
     # stable diffusion
     model = load_model_from_config(config, f"{opt.ckpt}").to(device)
@@ -397,14 +398,29 @@ if __name__ == '__main__':
     for epoch in range(start_epoch, opt.epochs):
         # train
         for idx,data in enumerate(val_dataloader):
-            if idx!=2:
+            if idx!=3:
                 continue
             with torch.no_grad():
+                # 将张量转换为numpy数组
+                im_np = data['im'].cpu().detach().numpy()
+                # 从[0,1]范围转换到[0,255]范围
+                im_np = (im_np * 255).astype(np.uint8)
+                im_np = im_np.squeeze(0)
+                # 从[C,H,W]转换为[H,W,C]
+                im_np = im_np.transpose(1, 2, 0)
+                # 从RGB转换回BGR（因为OpenCV默认使用BGR）
+                im_np = cv2.cvtColor(im_np, cv2.COLOR_RGB2BGR)
+                # 保存图像
+                cv2.imwrite(os.path.join(experiments_root, 'visualization', 'traget.jpg'), im_np)
                 # 计算验证损失
-                # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-                # edge = edge>0.5
-                # edge = edge.float()
-                edge = data['edge'].cuda(non_blocking=True)
+                edge = net_G(data['im'].cuda(non_blocking=True))[-1]
+                edge = edge>0.5
+                edge = edge.float()#1,1,512,512
+                im_edge = tensor2img(edge)
+                cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge_1.png'), im_edge)
+                edge = data['sketch'].cuda(non_blocking=True)
+                im_edge = tensor2img(edge)
+                cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge_2.png'), im_edge)
                 c = model.get_learned_conditioning(data['sentence'])
                 z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
                 z = model.get_first_stage_encoding(z)
@@ -435,7 +451,7 @@ if __name__ == '__main__':
                     x_sample = 255.*x_sample
                     img = x_sample.astype(np.uint8)
                     img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-                    cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.png'), img[:,:,::-1])
+                    cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.jpg'), img[:,:,::-1])
                     
                     # 如果启用了wandb，则将生成的图像记录到wandb
                     if opt.use_wandb and wandb_available:
@@ -456,9 +472,9 @@ if __name__ == '__main__':
                 continue
                         
             with torch.no_grad():
-                # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-                # edge = edge>0.5
-                # edge = edge.float()
+                edge = net_G(data['im'].cuda(non_blocking=True))[-1]
+                edge = edge>0.5
+                edge = edge.float()
                 edge = data['sketch'].cuda(non_blocking=True)
                 c = model.get_learned_conditioning(data['sentence'])
                 z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))

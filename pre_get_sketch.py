@@ -29,7 +29,7 @@ for i, data in enumerate(tqdm(dataloader, desc="Processing images", total=len(da
     edge = edge.float()
     im_edge = tensor2img(edge)
     name = data['name'][0]
-    cv2.imwrite(os.path.join(sketch_path, name), im_edge)
+    cv2.imwrite(os.path.join(sketch_path, name.replace('.jpg', '.png')), im_edge)
     tqdm.write(f"Processed: {name}")  # 更新进度条信息
     
 print("sketch completed.")   

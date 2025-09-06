@@ -2,6 +2,8 @@ import json
 import cv2
 import os
 from basicsr.utils import img2tensor
+import numpy as np
+import torch
 
 
 class dataset_coco_mask_color():
@@ -55,9 +57,20 @@ class dataset_coco_sketch():
         im = cv2.resize(im, (512, 512))
         im = img2tensor(im, bgr2rgb=True, float32=True) / 255.
 
-        sketch = cv2.imread(os.path.join(self.root_path_sketch, name))  # [:,:,0]
+        sketch = cv2.imread(os.path.join(self.root_path_sketch, name), cv2.IMREAD_GRAYSCALE) 
         sketch = cv2.resize(sketch, (512, 512))
-        sketch = img2tensor(sketch, bgr2rgb=True, float32=True) / 255.  # [0].unsqueeze(0)#/255.
+        # 使用OpenCV的threshold函数进行二值化，确保只有纯黑和纯白
+        _, sketch = cv2.threshold(sketch, 127, 255, cv2.THRESH_BINARY)
+
+        # 转换为浮点数并归一化到0-1范围
+        sketch = sketch.astype(np.float32) / 255.0
+
+        # 添加通道维度
+        sketch = np.expand_dims(sketch, axis=0)
+
+        # 转换为PyTorch张量
+        sketch = torch.from_numpy(sketch)
+        
 
         sentence = file['sentence']
         return {'im': im, 'sketch': sketch, 'sentence': sentence}
