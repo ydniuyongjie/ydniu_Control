@@ -1,3 +1,4 @@
+
 {
     // 使用 IntelliSense 了解相关属性。 
     // 悬停以查看现有属性的描述。
@@ -26,6 +27,25 @@
             "program": "pre_get_sketch.py",
             "console": "integratedTerminal",
            
+        },
+        {
+            "name": "test_sketch",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "test_adapter.py",
+            "console": "integratedTerminal",
+            "args": [                
+                "--which_cond",     "sketch",
+                "--cond_path",      "examples/sketch/car.png",
+                "--cond_inp_type",  "sketch",
+                "--prompt",          "A car with flying wings",
+                "--sd_ckpt",           "models/v1-5-pruned-emaonly.ckpt",
+                "--resize_short_edge", "512",
+                "--cond_tau",       "0.5", 
+                "--cond_weight",    "1.0", 
+                "--n_samples",      "4", 
+                "--adapter_ckpt",   "models/t2iadapter_sketch_sd14v1.pth",
+            ],
         },
         // {
         //     "name": "accelerate train_sketch",
