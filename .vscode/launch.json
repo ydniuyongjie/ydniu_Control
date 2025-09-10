@@ -16,6 +16,7 @@
                 "--instance_name",  "sketch",
                 "--bsize",          "6",
                 "--ckpt",           "models/v1-5-pruned-emaonly.ckpt",
+                "--config",           "configs/stable-diffusion/train_sketch_std.yaml",
                 //stable diffusion checkpoint path
                 // T2I-Adapter 官方推荐基础模型对接的是 v1-5-pruned-emaonly,包含完整的组件(UNet、文本编码器、VAE等) 
             ],
