@@ -120,7 +120,7 @@ def get_base_argument_parser() -> argparse.ArgumentParser:
         '--f',
         type=int,
         default=8,
-        help='downsampling factor',
+        help='DownSampling factor',
     )
 
     parser.add_argument(
