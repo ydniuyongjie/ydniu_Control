@@ -13,10 +13,10 @@
             "console": "integratedTerminal",
             "args": [                
                 "--use_wandb",
-                "--instance_name",  "sketch",
+                "--instance_name",  "sketch_decode",
                 "--bsize",          "6",
                 "--ckpt",           "models/v1-5-pruned-emaonly.ckpt",
-                "--config",         "configs/stable-diffusion/train_sketch.yaml",
+                "--config",         "configs/stable-diffusion/train_sketch_decode.yaml",
             ],
         },
          {
@@ -42,7 +42,7 @@
                 "--resize_short_edge", "512",
                 "--cond_tau",       "0.5", 
                 "--cond_weight",    "1.0", 
-                "--n_samples",      "4", 
+                "--n_samples",      "8", 
                 "--adapter_ckpt",   "models/t2iadapter_sketch_sd14v1.pth",
             ],
         },

@@ -113,7 +113,7 @@ parser.add_argument(
 parser.add_argument(
     "--val_iter",
     type=int,
-    default=5,
+    default=5000,
     help="validation frequency"
 )
 parser.add_argument(
@@ -422,8 +422,8 @@ if __name__ == '__main__':
                 c = model.get_learned_conditioning(data['sentence'])
                 z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
                 z = model.get_first_stage_encoding(z)
-                features_adapter = model_ad(edge)
-                features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0      
+                features_adapter = None
+                # features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0      
                 if opt.dpm_solver:
                     sampler = DPMSolverSampler(model)
                 elif opt.plms:
