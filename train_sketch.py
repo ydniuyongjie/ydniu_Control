@@ -113,7 +113,7 @@ parser.add_argument(
 parser.add_argument(
     "--val_iter",
     type=int,
-    default=5000,
+    default=10000,
     help="validation frequency"
 )
 parser.add_argument(
