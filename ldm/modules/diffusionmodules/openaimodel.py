@@ -1170,8 +1170,8 @@ class UNetModel_STD23(nn.Module):
             h = module(h, emb, context)
             if ((id+1)%3 == 0) and features_adapter is not None:
                 controls=features_adapter[adapter_idx]
-                mean_h, std_h = torch.mean(h, dim=(2, 3), keepdim=True), torch.std(h, dim=(1, 2, 3), keepdim=True)
-                mean_control, std_control = torch.mean(controls, dim=(2, 3), keepdim=True), torch.std(controls, dim=(1, 2, 3), keepdim=True)
+                mean_h, std_h = torch.mean(h, dim=(2, 3), keepdim=True), torch.std(h, dim=(2, 3), keepdim=True)
+                mean_control, std_control = torch.mean(controls, dim=(2, 3), keepdim=True), torch.std(controls, dim=(2, 3), keepdim=True)
                 controls = (controls - mean_control) * (std_h / (std_control + 1e-12)) + mean_h
                 # controls = nn.functional.adaptive_avg_pool2d(controls, h.shape[-2:])
                 h = h + controls * 1.0                

@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import random
+import itertools
 import torch.nn as nn
 from basicsr.utils import (get_env_info, get_root_logger, get_time_str,
                            img2tensor, scandir, tensor2img)
@@ -328,8 +329,13 @@ if __name__ == '__main__':
     model_ad = Adapter(channels=[320, 640, 1280, 1280][:4], nums_rb=2, ksize=1, sk=True, use_conv=False).to(device)
 
     # optimizer
+#     trainable_params = itertools.chain(
+#     model_ad.parameters(), 
+#     model.model.diffusion_model.control_injectors.parameters() # 访问UNet内部的注入模块
+# )
     params = list(model_ad.parameters())
     optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
+    # optimizer = torch.optim.AdamW(trainable_params, lr=config['training']['lr'])
 
     experiments_root = osp.join('experiments', opt.instance_name)
 
