@@ -3,7 +3,7 @@ import math
 import torch
 
 import numpy as np
-import ControlInjectionBlock
+from ldm.modules.diffusionmodules.ControlInjectionBlock import ControlInjectionBlock
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
@@ -533,8 +533,10 @@ class UNetModel(nn.Module):
         )
         # 1. 动态且正确地定义4个注入点的通道数。
         adapter_channels = [model_channels * mult for mult in channel_mult]
-        adapter_channels = [model_channels * mult for mult in channel_mult]
-        self.control_injectors = nn.ModuleList(ControlInjectionBlock(channels=ch, time_emb_dim=time_embed_dim) for ch in adapter_channels)
+        # 注释掉内部的control_injectors定义，改用外部传入的方式
+        # self.control_injectors = nn.ModuleList(ControlInjectionBlock(channels=ch, time_emb_dim=time_embed_dim) for ch in adapter_channels)
+        # 不再初始化内部的control_injectors
+        
         if self.num_classes is not None:
             if isinstance(self.num_classes, int):
                 self.label_emb = nn.Embedding(num_classes, time_embed_dim)
@@ -756,13 +758,16 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps=None, context=None, y=None, features_adapter=None, append_to_context=None, **kwargs):
+    def forward(self, x, timesteps=None, context=None, y=None, features_adapter=None, append_to_context=None, control_injectors=None, **kwargs):
         """
         Apply the model to an input batch.
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
         :param context: conditioning plugged in via crossattn
         :param y: an [N] Tensor of labels, if class-conditional.
+        :param features_adapter: T2I-Adapter features for sparse injection
+        :param append_to_context: additional context to append
+        :param control_injectors: external control injectors (required for feature injection)
         :return: an [N x C x ...] Tensor of outputs.
         """
         assert (y is not None) == (
@@ -784,14 +789,20 @@ class UNetModel(nn.Module):
         adapter_idx = 0
         for id, module in enumerate(self.input_blocks):
             h = module(h, emb, context)
-            if ((id+1)%3 == 0) and features_adapter is not None:               
-                h = self.control_injectors[adapter_idx](
-                    h=h, 
-                    emb=emb, 
-                    controls=features_adapter[adapter_idx]
-                )
+            if ((id + 1) % 3 == 0) and features_adapter is not None:
+                # 只有在 features_adapter 存在时才考虑注入
+                if control_injectors is not None and adapter_idx < len(control_injectors):
+                    # 仅当 control_injectors 存在且索引合法时注入
+                    h = control_injectors[adapter_idx](
+                        h=h,
+                        emb=emb,
+                        controls=features_adapter[adapter_idx]
+                    )
                 adapter_idx += 1
             hs.append(h)
+
+        if features_adapter is not None:
+            assert len(features_adapter) == adapter_idx, 'Wrong features_adapter'
         if features_adapter is not None:
             assert len(features_adapter)==adapter_idx, 'Wrong features_adapter'
 

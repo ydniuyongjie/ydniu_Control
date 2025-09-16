@@ -327,15 +327,22 @@ if __name__ == '__main__':
 
     # sketch encoder
     model_ad = Adapter(channels=[320, 640, 1280, 1280][:4], nums_rb=2, ksize=1, sk=True, use_conv=False).to(device)
+    
+    # Control Injection Blocks
+    adapter_channels = [320, 640, 1280, 1280][:4]  # 与Adapter通道数对应
+    control_injectors = nn.ModuleList(
+        ControlInjectionBlock(channels=ch, time_emb_dim=1280) for ch in adapter_channels
+    ).to(device)
 
     # optimizer
-#     trainable_params = itertools.chain(
-#     model_ad.parameters(), 
-#     model.model.diffusion_model.control_injectors.parameters() # 访问UNet内部的注入模块
-# )
-    params = list(model_ad.parameters())
-    optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
-    # optimizer = torch.optim.AdamW(trainable_params, lr=config['training']['lr'])
+    trainable_params = itertools.chain(
+    model_ad.parameters(), 
+    # model.model.diffusion_model.control_injectors.parameters() # 访问UNet内部的注入模块
+    control_injectors.parameters()  # 使用外部的control_injectors
+)
+    # params = list(model_ad.parameters())
+    # optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
+    optimizer = torch.optim.AdamW(trainable_params, lr=config['training']['lr'])
 
     experiments_root = osp.join('experiments', opt.instance_name)
 
@@ -367,6 +374,13 @@ if __name__ == '__main__':
         logger.info("Training has resumed.So loaded optimizer state")
         model_ad.load_state_dict(resume_ckpt)
         logger.info("Training has resumed.So Loaded model_ad state")
+        
+        # 加载ControlInjectionBlock权重
+        control_injectors_ckpt_path = resume_ckpt_path.replace('model_ad', 'model_control_injectors')
+        if os.path.exists(control_injectors_ckpt_path):
+            control_injectors_ckpt = torch.load(control_injectors_ckpt_path, map_location=lambda storage, loc: storage.cuda(device_id))
+            control_injectors.load_state_dict(control_injectors_ckpt)
+            logger.info("Training has resumed.So Loaded control_injectors state")
 
     # copy the yml file to the experiment root
     copy_opt_file(opt.config, experiments_root)
@@ -486,7 +500,7 @@ if __name__ == '__main__':
             optimizer.zero_grad()
             model.zero_grad()
             features_adapter = model_ad(edge)
-            l_pixel, loss_dict = model(z, c=c, features_adapter = features_adapter)
+            l_pixel, loss_dict = model(z, c=c, features_adapter = features_adapter, control_injectors=control_injectors)
             l_pixel.backward()
             optimizer.step()
 
@@ -518,6 +532,15 @@ if __name__ == '__main__':
                 save_filename = f'model_ad_{current_iter+1}.pth'
                 save_path = os.path.join(experiments_root, 'models', save_filename)
                 state_dict = model_ad.state_dict()
+                save_dict = {}
+                for key, param in state_dict.items():
+                    save_dict[key] = param.cpu()
+                torch.save(save_dict, save_path)
+                
+                # 保存ControlInjectionBlock参数
+                save_filename = f'model_control_injectors_{current_iter+1}.pth'
+                save_path = os.path.join(experiments_root, 'models', save_filename)
+                state_dict = control_injectors.state_dict()
                 save_dict = {}
                 for key, param in state_dict.items():
                     save_dict[key] = param.cpu()
@@ -557,7 +580,7 @@ if __name__ == '__main__':
                         features_adapter = model_ad(edge)
                         
                         # 计算验证损失
-                        val_loss, val_loss_dict = model(z, c=c, features_adapter=features_adapter)
+                        val_loss, val_loss_dict = model(z, c=c, features_adapter=features_adapter, control_injectors=control_injectors)
                         
                         # 累积验证损失
                         val_loss_simple = val_loss_dict.get('loss_simple', val_loss).item()
@@ -600,7 +623,8 @@ if __name__ == '__main__':
                                                             unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
                                                             eta=opt.ddim_eta,
                                                             x_T=None,
-                                                            features_adapter=features_adapter)
+                                                            features_adapter=features_adapter,
+                                                            control_injectors=control_injectors)
                         x_samples_ddim = model.decode_first_stage(samples_ddim)
                         x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                         x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
@@ -631,6 +655,15 @@ if __name__ == '__main__':
     save_filename = f'model_ad_final.pth'
     save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
     state_dict = model_ad.state_dict()
+    save_dict = {}
+    for key, param in state_dict.items():
+        save_dict[key] = param.cpu()
+    torch.save(save_dict, save_path)
+    
+    # 保存ControlInjectionBlock最终参数
+    save_filename = f'model_control_injectors_final.pth'
+    save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
+    state_dict = control_injectors.state_dict()
     save_dict = {}
     for key, param in state_dict.items():
         save_dict[key] = param.cpu()
