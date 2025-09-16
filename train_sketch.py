@@ -27,6 +27,7 @@ from ldm.modules.encoders.adapter import Adapter
 from ldm.util import instantiate_from_config
 from ldm.modules.extra_condition.model_edge import pidinet
 from tutorial_dataset import MyDataset
+from ldm.modules.diffusionmodules.ControlInjectionBlock import ControlInjectionBlock
 
 # 添加wandb导入
 try:
