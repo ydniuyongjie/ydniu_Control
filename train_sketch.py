@@ -21,6 +21,7 @@ from PIL import Image
 
 from ldm.data.dataset_coco import dataset_coco_sketch
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.ddim_niu import DDIMSamplerNIU  # 添加新的采样器
 from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 from ldm.models.diffusion.plms import PLMSSampler
 from ldm.modules.encoders.adapter import Adapter
@@ -115,7 +116,7 @@ parser.add_argument(
 parser.add_argument(
     "--val_iter",
     type=int,
-    default=10000,
+    default=10,
     help="validation frequency"
 )
 parser.add_argument(
@@ -325,7 +326,77 @@ if __name__ == '__main__':
 
     # stable diffusion
     model = load_model_from_config(config, f"{opt.ckpt}").to(device)
-
+    
+    experiments_root = osp.join('experiments', opt.instance_name)
+    mkdir_and_rename(experiments_root)
+    for idx,data in enumerate(val_dataloader):
+        # if idx!=12:
+        #     continue
+        with torch.no_grad():
+            # 将张量转换为numpy数组
+            im_np = data['im'].cpu().detach().numpy()
+            # 从[0,1]范围转换到[0,255]范围
+            im_np = (im_np * 255).astype(np.uint8)
+            im_np = im_np.squeeze(0)
+            # 从[C,H,W]转换为[H,W,C]
+            im_np = im_np.transpose(1, 2, 0)
+            # 从RGB转换回BGR（因为OpenCV默认使用BGR）
+            im_np = cv2.cvtColor(im_np, cv2.COLOR_RGB2BGR)
+            # 保存图像
+            cv2.imwrite(os.path.join(experiments_root, 'visualization', 'traget.jpg'), im_np)
+            # 计算验证损失
+            # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
+            # edge = edge>0.5
+            # edge = edge.float()#1,1,512,512
+            # im_edge = tensor2img(edge)
+            # cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge_1.png'), im_edge)
+            edge = data['sketch'].cuda(non_blocking=True)
+            im_edge = tensor2img(edge)
+            cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge.png'), im_edge)
+            c = model.get_learned_conditioning(data['sentence'])
+            z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
+            z = model.get_first_stage_encoding(z)
+            features_adapter = None
+            control_injectors = None
+            # features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0      
+            if opt.dpm_solver:
+                sampler = DPMSolverSampler(model)
+            elif opt.plms:
+                sampler = PLMSSampler(model)
+            else:
+                # 使用新的采样器
+                sampler = DDIMSamplerNIU(model)
+            shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
+            samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
+                                                conditioning=c,
+                                                batch_size=opt.n_samples,
+                                                shape=shape,
+                                                verbose=False,
+                                                unconditional_guidance_scale=opt.scale,
+                                                unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
+                                                eta=opt.ddim_eta,
+                                                x_T=None,
+                                                features_adapter=features_adapter,
+                                                control_injectors=control_injectors)
+            x_samples_ddim = model.decode_first_stage(samples_ddim)
+            x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
+            x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
+            for id_sample, x_sample in enumerate(x_samples_ddim):
+                x_sample = 255.*x_sample
+                img = x_sample.astype(np.uint8)
+                img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+                cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.png'), img[:,:,::-1])
+                
+                # 如果启用了wandb，则将生成的图像记录到wandb
+                if opt.use_wandb and wandb_available:
+                    # 将生成的图像转换为wandb.Image格式
+                    wandb_image = wandb.Image(
+                        img, 
+                        caption=f"origin image from model")
+                    wandb.log({
+                        f"val/origin image": wandb_image
+                    }, step=0)
+            break
     # sketch encoder
     model_ad = Adapter(channels=[320, 640, 1280, 1280][:4], nums_rb=2, ksize=1, sk=True, use_conv=False).to(device)
     
@@ -345,7 +416,7 @@ if __name__ == '__main__':
     # optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
     optimizer = torch.optim.AdamW(trainable_params, lr=config['training']['lr'])
 
-    experiments_root = osp.join('experiments', opt.instance_name)
+    
 
     # resume state
     resume_state,resume_ckpt = load_resume_state(opt)
@@ -415,72 +486,7 @@ if __name__ == '__main__':
     # training    
     start_iter= current_iter - start_epoch * num_update_steps_per_epoch
     for epoch in range(start_epoch, opt.epochs):
-        # train
-        for idx,data in enumerate(val_dataloader):
-            # if idx!=12:
-            #     continue
-            with torch.no_grad():
-                # 将张量转换为numpy数组
-                im_np = data['im'].cpu().detach().numpy()
-                # 从[0,1]范围转换到[0,255]范围
-                im_np = (im_np * 255).astype(np.uint8)
-                im_np = im_np.squeeze(0)
-                # 从[C,H,W]转换为[H,W,C]
-                im_np = im_np.transpose(1, 2, 0)
-                # 从RGB转换回BGR（因为OpenCV默认使用BGR）
-                im_np = cv2.cvtColor(im_np, cv2.COLOR_RGB2BGR)
-                # 保存图像
-                cv2.imwrite(os.path.join(experiments_root, 'visualization', 'traget.jpg'), im_np)
-                # 计算验证损失
-                # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-                # edge = edge>0.5
-                # edge = edge.float()#1,1,512,512
-                # im_edge = tensor2img(edge)
-                # cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge_1.png'), im_edge)
-                edge = data['sketch'].cuda(non_blocking=True)
-                im_edge = tensor2img(edge)
-                cv2.imwrite(os.path.join(experiments_root, 'visualization', 'edge.png'), im_edge)
-                c = model.get_learned_conditioning(data['sentence'])
-                z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
-                z = model.get_first_stage_encoding(z)
-                features_adapter = None
-                # features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0      
-                if opt.dpm_solver:
-                    sampler = DPMSolverSampler(model)
-                elif opt.plms:
-                    sampler = PLMSSampler(model)
-                else:
-                    sampler = DDIMSampler(model)
-                shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
-                samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
-                                                    conditioning=c,
-                                                    batch_size=opt.n_samples,
-                                                    shape=shape,
-                                                    verbose=False,
-                                                    unconditional_guidance_scale=opt.scale,
-                                                    unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
-                                                    eta=opt.ddim_eta,
-                                                    x_T=None,
-                                                    features_adapter=features_adapter)
-                x_samples_ddim = model.decode_first_stage(samples_ddim)
-                x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
-                x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
-                for id_sample, x_sample in enumerate(x_samples_ddim):
-                    x_sample = 255.*x_sample
-                    img = x_sample.astype(np.uint8)
-                    img = cv2.putText(img.copy(), data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-                    cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.png'), img[:,:,::-1])
-                    
-                    # 如果启用了wandb，则将生成的图像记录到wandb
-                    if opt.use_wandb and wandb_available:
-                        # 将生成的图像转换为wandb.Image格式
-                        wandb_image = wandb.Image(
-                            img, 
-                            caption=f"origin image from model")
-                        wandb.log({
-                            f"val/origin image": wandb_image
-                        }, step=0)
-                break         
+        # train         
         # from itertools import islice
         gen_image_count=0
         for batch_idx, data in enumerate(train_dataloader):#enumerate(islice(train_dataloader, 500)):
@@ -593,7 +599,8 @@ if __name__ == '__main__':
                         elif opt.plms:
                             sampler = PLMSSampler(model)
                         else:
-                            sampler = DDIMSampler(model)
+                            # 使用新的采样器
+                            sampler = DDIMSamplerNIU(model)
                         print(data['im'].shape)
                         c = model.get_learned_conditioning(data['sentence'])
                         # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
@@ -673,4 +680,3 @@ if __name__ == '__main__':
     # 结束wandb会话
     if opt.use_wandb and wandb_available:
         wandb.finish()
-            
