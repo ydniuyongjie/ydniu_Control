@@ -22,11 +22,17 @@ def main():
         required=True,
         choices=supported_cond,
         help='which condition modality you want to test',
+    )   
+    parser.add_argument(
+        '--condition',
+        type=str,
+        required=True,
+        help='condition argument you want to test',
     )
     opt = parser.parse_args()
     which_cond = opt.which_cond
     if opt.outdir is None:
-        opt.outdir = f'outputs/test-{which_cond}'
+        opt.outdir = f'outputs/test-{opt.condition}'
     os.makedirs(opt.outdir, exist_ok=True)
     if opt.resize_short_edge is None:
         print(f"you don't specify the resize_shot_edge, so the maximum resolution is set to {opt.max_resolution}")
@@ -67,13 +73,16 @@ def main():
                 # seed_everything(opt.seed+v_idx+test_idx)
                 cond = process_cond_module(opt, cond_path, opt.cond_inp_type, cond_model)
 
-                base_count = len(os.listdir(opt.outdir)) // 2
-                cv2.imwrite(os.path.join(opt.outdir, f'{base_count:05}_{which_cond}.png'), tensor2img(cond))
+                # base_count = len(os.listdir(opt.outdir)) // 3
+                cv2.imwrite(os.path.join(opt.outdir, f'{v_idx:05}_{which_cond}.png'), tensor2img(cond))
 
                 adapter_features, append_to_context = get_adapter_feature(cond, adapter)
                 opt.prompt = prompt
                 result = diffusion_inference(opt, sd_model, sampler, adapter_features, append_to_context)
-                cv2.imwrite(os.path.join(opt.outdir, f'{base_count:05}_result.png'), tensor2img(result))
+                cv2.imwrite(os.path.join(opt.outdir, f'{v_idx:05}_result.png'), tensor2img(result))
+                adapter_features=None
+                result = diffusion_inference(opt, sd_model, sampler, adapter_features, append_to_context)
+                cv2.imwrite(os.path.join(opt.outdir, f'{v_idx:05}_origin.png'), tensor2img(result))
 
 
 if __name__ == '__main__':

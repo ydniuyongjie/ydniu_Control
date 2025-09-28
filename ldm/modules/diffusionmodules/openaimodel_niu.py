@@ -803,8 +803,6 @@ class UNetModel(nn.Module):
 
         if features_adapter is not None:
             assert len(features_adapter) == adapter_idx, 'Wrong features_adapter'
-        if features_adapter is not None:
-            assert len(features_adapter)==adapter_idx, 'Wrong features_adapter'
 
         h = self.middle_block(h, emb, context)
         

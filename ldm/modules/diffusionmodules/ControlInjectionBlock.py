@@ -58,8 +58,8 @@ class ControlInjectionBlock(nn.Module):
         """
         # --- 步骤 0: 自适应实例归一化 (AdaIN) ---
         # 目标: 将controls的内容（结构）与h的风格（纹理）对齐。
-        mean_h, std_h = torch.mean(h, dim=(2, 3), keepdim=True), torch.std(h, dim=(2, 3), keepdim=True)
-        mean_control, std_control = torch.mean(controls, dim=(2, 3), keepdim=True), torch.std(controls, dim=(2, 3), keepdim=True)
+        mean_h, std_h = torch.mean(h, dim=(1,2, 3), keepdim=True), torch.std(h, dim=(1,2, 3), keepdim=True)
+        mean_control, std_control = torch.mean(controls, dim=(1,2, 3), keepdim=True), torch.std(controls, dim=(1,2, 3), keepdim=True)
 
         # 添加一个小的epsilon或使用torch.where来防止除以零的错误
         std_control = torch.where(std_control < 1e-6, torch.ones_like(std_control), std_control)

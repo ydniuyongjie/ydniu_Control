@@ -49,6 +49,7 @@
             "console": "integratedTerminal",
             "args": [                
                 "--which_cond",     "sketch",
+                "--condition",     "std23_car",
                 "--cond_path",      "examples/sketch/car.png",
                 "--cond_inp_type",  "sketch",
                 "--prompt",          "A car with flying wings",
@@ -57,12 +58,12 @@
                 "--cond_tau",       "0.5", 
                 "--cond_weight",    "1.0", 
                 "--n_samples",      "8", 
-                "--adapter_ckpt",   "models/model_ad_std.pth",
+                "--adapter_ckpt",   "models/model_ad_std23.pth",
                 "--config",         "configs/stable-diffusion/sd-v1-inference_std.yaml",
             ],
         },
         // {
-        //     "name": "accelerate train_sketch",
+        //     "name": "accelerate train_sketch",  A car with flying wings     A sea turtle in the water,high resolution
         //     "type": "debugpy",
         //     "request": "launch",
         //     "module": "accelerate.commands.launch",

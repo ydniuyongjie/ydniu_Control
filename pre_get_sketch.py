@@ -11,15 +11,22 @@ net_G = pidinet()
 ckp = torch.load('models/table5_pidinet.pth', map_location='cpu')['state_dict']
 net_G.load_state_dict({k.replace('module.',''):v for k, v in ckp.items()})
 net_G.cuda()
-dataset = dataset_coco(root_path_im='coco/train2017')
-sketch_path="coco_stuff/sketch/train2017_sketch"
+# dataset = dataset_coco(root_path_im='coco/train2017')
+# sketch_path="coco_stuff/sketch/train2017_sketch"
+# dataloader = torch.utils.data.DataLoader(
+#             dataset,
+#             batch_size=1,
+#             shuffle=False,
+#             num_workers=0,
+#             pin_memory=True)
+dataset = dataset_coco(root_path_im='custom_data/tupian')
+sketch_path="custom_data/sketch"
 dataloader = torch.utils.data.DataLoader(
             dataset,
             batch_size=1,
             shuffle=False,
             num_workers=0,
             pin_memory=True)
-
 if not os.path.exists(sketch_path):
     os.makedirs(sketch_path)
 

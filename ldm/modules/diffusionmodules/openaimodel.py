@@ -798,7 +798,7 @@ class UNetModel(nn.Module):
         else:
             return self.out(h)
 
-class UNetModel_STD23(nn.Module):
+class UNetModel_STD(nn.Module):
     """
     The full UNet model with attention and timestep embedding.
     :param in_channels: channels in the input Tensor.
