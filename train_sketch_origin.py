@@ -634,6 +634,3 @@ if __name__ == '__main__':
     # 结束wandb会话
     if opt.use_wandb and wandb_available:
         wandb.finish()
-            
-
- 
