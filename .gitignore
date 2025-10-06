@@ -127,6 +127,7 @@ venv.bak/
 .mypy_cache/
 .history/
 coco/
+depth/
 coco_stuff/
 experiments/
 wandb/

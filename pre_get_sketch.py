@@ -32,7 +32,7 @@ if not os.path.exists(sketch_path):
 
 for i, data in enumerate(tqdm(dataloader, desc="Processing images", total=len(dataloader))):
     edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-    edge = edge > 0.5
+    edge = edge > 0.1
     edge = edge.float()
     im_edge = tensor2img(edge)
     name = data['name'][0]

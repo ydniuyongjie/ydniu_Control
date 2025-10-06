@@ -28,7 +28,7 @@ model:
         f_min: [ 1. ]
 
     unet_config:
-      target: ldm.modules.diffusionmodules.openaimodel.UNetModel_STD23
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel_STD
       params:
         image_size: 32 # unused
         in_channels: 4
