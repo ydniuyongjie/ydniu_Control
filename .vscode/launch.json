@@ -41,7 +41,7 @@
             "console": "integratedTerminal",
             "args": [                
                 "--use_wandb",
-                "--instance_name",  "depth_std123",
+                "--instance_name",  "depth_std123_1e4",
                 "--bsize",          "6",
                 "--ckpt",           "models/v1-5-pruned-emaonly.ckpt",
                 "--config",         "configs/stable-diffusion/sd-v1-train.yaml",

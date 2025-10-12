@@ -11,6 +11,8 @@ from basicsr.utils import (get_env_info, get_root_logger, get_time_str,
                            img2tensor, scandir, tensor2img)
 from basicsr.utils.options import copy_opt_file, dict2str
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.dpm_solver import DPMSolverSampler
+from ldm.models.diffusion.plms import PLMSSampler
 from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
 from ldm.data.dataset_depth import DepthDataset
@@ -88,7 +90,7 @@ def load_resume_state(opt):
 
 
 
-def parsr_args():
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--bsize",
@@ -255,7 +257,7 @@ def parsr_args():
 
 
 def main():
-    opt = parsr_args()
+    opt = parse_args()
     config = OmegaConf.load(f"{opt.config}")
     opt.name = config['name']
 
@@ -317,7 +319,7 @@ def main():
         # 从RGB转换回BGR（因为OpenCV默认使用BGR）
         im_np = cv2.cvtColor(im_np, cv2.COLOR_RGB2BGR)
         # 保存图像
-        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'traget.jpg'), im_np)
+        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'target.jpg'), im_np)
         # 计算验证损失
         # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
         # edge = edge>0.5
@@ -358,7 +360,7 @@ def main():
         for id_sample, x_sample in enumerate(x_samples_ddim):
             x_sample = 255.*x_sample
             img = x_sample.astype(np.uint8)
-            img = cv2.putText(img.copy(), val_data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+            img = cv2.putText(img.copy(), val_data['sentence'], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
             cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.png'), img[:,:,::-1])
             
             # 如果启用了wandb，则将生成的图像记录到wandb
@@ -377,6 +379,19 @@ def main():
     # optimizer
     params = list(model_ad.parameters())
     optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
+    
+    # 添加CosineAnnealingLR学习率调度器
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, 
+        T_max=opt.epochs, 
+        eta_min=1e-7  # 最小学习率
+    )
+
+    # 添加早停机制参数
+    best_val_loss = float('inf')
+    patience = 5  # 早停耐心值
+    patience_counter = 0  # 早停计数器
+    best_model_state = None  # 最佳模型状态
 
 
 
@@ -457,6 +472,9 @@ def main():
             l_pixel, loss_dict = model(z, c=c, features_adapter=features_adapter)
             l_pixel.backward()
             optimizer.step()
+            
+
+
             # 更新进度条
             progress_bar.update(1)
             
@@ -504,19 +522,11 @@ def main():
                
             # val
             if (current_iter+1)% opt.val_iter == 0:  # Always run validation for single GPU training
-                # 初始化验证损失累积变量
-                val_loss_simple = 0.0
-                val_loss_vlb = 0.0
-                val_loss_total = 0.0
                 gen_image_count+=1
                 
                 val_data = train_dataset[14]                            
 
                 with torch.no_grad():
-                    # 计算验证损失
-                    # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
-                    # edge = edge>0.5
-                    # edge = edge.float()
                     depth_data = val_data['depth'].cuda(non_blocking=True)
                     c = model.get_learned_conditioning(val_data['sentence'])
                     #改变形状
@@ -525,15 +535,6 @@ def main():
                     z = model.get_first_stage_encoding(z)
                     depth_data=depth_data.unsqueeze(0)
                     features_adapter = model_ad(depth_data)
-                    
-                    # 计算验证损失
-                    val_loss, val_loss_dict = model(z, c=c, features_adapter=features_adapter)
-                    
-                    # 累积验证损失
-                    val_loss_simple = val_loss_dict.get('loss_simple', val_loss).item()
-                    val_loss_vlb = val_loss_dict.get('loss_vlb', torch.tensor(0.0)).item()
-                    val_loss_total = val_loss.item()
-                    
                     if opt.dpm_solver:
                         sampler = DPMSolverSampler(model)
                     elif opt.plms:
@@ -541,10 +542,9 @@ def main():
                     else:
                         sampler = DDIMSampler(model)
                     print(val_data['im'].shape)
-                    c = model.get_learned_conditioning(val_data['sentence'])
 
-                    depth_data = val_data['depth'].cuda(non_blocking=True)
-                    im_edge = tensor2img(depth_data)
+                    depth_data_vis = val_data['depth'].cuda(non_blocking=True)
+                    im_edge = tensor2img(depth_data_vis)
                     cv2.imwrite(os.path.join(experiments_root, 'visualization', 'depth_%04d.png'%epoch), im_edge)
                     
                     # 如果启用了wandb，则将边缘图像记录到wandb
@@ -575,7 +575,7 @@ def main():
                     for id_sample, x_sample in enumerate(x_samples_ddim):
                         x_sample = 255.*x_sample
                         img = x_sample.astype(np.uint8)
-                        img = cv2.putText(img.copy(), val_data['sentence'][0], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+                        img = cv2.putText(img.copy(), val_data['sentence'], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
                         cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, gen_image_count)), img[:,:,::-1])
                         
                         # 如果启用了wandb，则将生成的图像记录到wandb
@@ -583,16 +583,23 @@ def main():
                             # 将生成的图像转换为wandb.Image格式
                             wandb_image = wandb.Image(
                                 img, 
-                                caption=f"Epoch {epoch} Sample {gen_image_count}: {val_data['sentence'][0]}"
+                                caption=f"Epoch {epoch} Sample {gen_image_count}: {val_data['sentence']}"
                             )
                             wandb.log({
                                 f"val/generated_image_e{epoch:04d}_s{gen_image_count:04d}": wandb_image
                             }, step=current_iter)  
+    
             
             # 正常训练流程
-            current_iter += 1            
+            current_iter += 1
+        # 每个epoch结束时更新学习率调度器并记录当前学习率
+        scheduler.step()
+        current_lr = optimizer.param_groups[0]['lr']
+        logger.info(f'Epoch {epoch} finished. Current learning rate: {current_lr}')
+    
     # 关闭进度条
     progress_bar.close()
+    
     # 保存模型
     # 添加最终模型保存代码（位置1）
     save_filename = f'model_ad_final.pth'

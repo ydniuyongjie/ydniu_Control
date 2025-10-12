@@ -83,5 +83,5 @@ dist_params:
   backend: nccl
   port: 29500
 training:
-  lr: !!float 1e-5
+  lr: !!float 1e-4
   save_freq: 1e4
