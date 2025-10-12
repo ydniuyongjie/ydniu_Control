@@ -838,6 +838,7 @@ def main():
                         else:
                             # 性能没有改善，增加早停计数器
                             patience_counter += 1
+                            logger.info(f"Current composite score: {composite_score:.4f}, Best: {best_val_score:.4f}")
                             logger.info(f"Validation score did not improve. Patience counter: {patience_counter}/{patience}")
                             logger.info(f"早停说明: 连续{patience}次验证无改善将自动停止训练，当前第{patience_counter}次")
 
