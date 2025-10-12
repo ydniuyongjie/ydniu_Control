@@ -590,6 +590,11 @@ def main():
     patience_counter = 0  # 早停计数器
     best_model_state = None  # 最佳模型状态
 
+    # 早停计算说明:
+    # - 数据集: 12000张图片, 批量大小: 6, 每epoch: 2000次迭代
+    # - 验证频率: 每2000次迭代 (每epoch验证一次)
+    # - 早停条件: 连续5次验证无改善 = 连续5个epoch无改善
+
 
 
     # resume state
@@ -810,6 +815,7 @@ def main():
                         composite_score = calculate_composite_score(metrics)
 
                         # 早停判断和最佳模型保存
+                        # 早停机制：每次验证时判断，如果连续5次验证没有改善则停止训练
                         if composite_score > best_val_score:
                             best_val_score = composite_score
                             patience_counter = 0
@@ -830,13 +836,16 @@ def main():
                             if opt.use_wandb and wandb_available:
                                 wandb.log({"val/composite_score": composite_score}, step=current_iter)
                         else:
+                            # 性能没有改善，增加早停计数器
                             patience_counter += 1
                             logger.info(f"Validation score did not improve. Patience counter: {patience_counter}/{patience}")
+                            logger.info(f"早停说明: 连续{patience}次验证无改善将自动停止训练，当前第{patience_counter}次")
 
                         # 检查是否需要早停
                         if patience_counter >= patience:
                             logger.info(f"Early stopping triggered after {patience} validations without improvement")
                             logger.info(f"Best composite score: {best_val_score:.4f}")
+                            logger.info(f"训练已早停: 在连续{patience}次验证（约{patience * opt.val_iter}次迭代）中性能未提升")
                             early_stop = True
                             break
 
