@@ -83,5 +83,6 @@ dist_params:
   backend: nccl
   port: 29500
 training:
-  lr: !!float 1e-4
+  lr: !!float 5e-5
   save_freq: 1e4
+  gradient_accumulation_steps: 4  # 梯度累积步数，实现等效批量大小 6*4=24

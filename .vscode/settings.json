@@ -1,3 +1,5 @@
 {
-    "Codegeex.RepoIndex": true
+    "Codegeex.RepoIndex": true,
+    "chatgpt.commentCodeLensEnabled": true,
+    "chatgpt.openOnStartup": true
 }

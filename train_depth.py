@@ -296,7 +296,7 @@ def parse_args():
     parser.add_argument(
         "--epochs",
         type=int,
-        default=120,
+        default=150,
     )
     parser.add_argument(
         "--val_iter",
@@ -577,16 +577,17 @@ def main():
     optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
     
     # 添加CosineAnnealingLR学习率调度器
+    # eta_min设置为初始学习率的2%，即5e-5 * 0.02 = 1e-6
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, 
-        T_max=opt.epochs, 
-        eta_min=1e-7  # 最小学习率
+        optimizer,
+        T_max=opt.epochs,
+        eta_min=1e-6  # 最小学习率，调整为初始学习率的2%
     )
 
     # 重新启用早停机制，基于图像质量评估
     best_val_score = -float('inf')  # 越大越好（SSIM、PSNR）
     worst_lpips = float('inf')      # 越小越好（LPIPS）
-    patience = 5  # 早停耐心值
+    patience = 15  # 早停耐心值
     patience_counter = 0  # 早停计数器
     best_model_state = None  # 最佳模型状态
 
@@ -642,12 +643,17 @@ def main():
     
     num_update_steps_per_epoch = math.ceil(len(train_dataloader)) #math.ceil(500)
     
+    # 获取梯度累积步数
+    gradient_accumulation_steps = config['training'].get('gradient_accumulation_steps', 1)
+    effective_batch_size = opt.bsize * gradient_accumulation_steps
+
     # 显示训练信息
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {opt.epochs}")
     logger.info(f"  Instantaneous batch size per device = {opt.bsize}")
-    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {opt.bsize}")
+    logger.info(f"  Gradient accumulation steps = {gradient_accumulation_steps}")
+    logger.info(f"  Total train batch size (w. gradient accumulation) = {effective_batch_size}")
     logger.info(f"  Total optimization steps = {num_update_steps_per_epoch * opt.epochs}")
     # 初始化进度条
     total_steps = num_update_steps_per_epoch * opt.epochs
@@ -665,8 +671,10 @@ def main():
     # training
     start_iter= current_iter - start_epoch * num_update_steps_per_epoch
 
-    # 训练循环，支持早停
+    # 训练循环，支持早停和梯度累积
     early_stop = False
+    optimizer.zero_grad()  # 在开始时清零梯度
+
     for epoch in range(start_epoch, opt.epochs):
         # train_dataloader.sampler.set_epoch(epoch)
         # train
@@ -674,44 +682,54 @@ def main():
         for batch_idx, data in enumerate(train_dataloader):
             if epoch == start_epoch and batch_idx < start_iter:
                 continue
-                        
+
             with torch.no_grad():
                 depth_data = data['depth'].cuda(non_blocking=True)
                 c = model.get_learned_conditioning(data['sentence'])
-                z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))                
+                z = model.encode_first_stage((data['im']*2-1.).cuda(non_blocking=True))
                 z = model.get_first_stage_encoding(z)
 
-            optimizer.zero_grad()
-            model.zero_grad()            
+            # 前向传播
             features_adapter = model_ad(depth_data)
             l_pixel, loss_dict = model(z, c=c, features_adapter=features_adapter)
-            l_pixel.backward()
-            optimizer.step()
+
+            # 梯度累积：将损失除以累积步数
+            scaled_loss = l_pixel / gradient_accumulation_steps
+            scaled_loss.backward()
+
+            # 检查是否需要更新权重
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                # 梯度裁剪（可选）
+                torch.nn.utils.clip_grad_norm_(model_ad.parameters(), max_norm=1.0)
+                optimizer.step()
+                optimizer.zero_grad()
             
 
 
             # 更新进度条
             progress_bar.update(1)
-            
-            if (current_iter+1)%opt.print_fq == 0:
-                # 记录简洁的训练损失到日志文件
-                clean_loss_dict = {}
-                for key, value in loss_dict.items():
-                    if hasattr(value, 'item'):
-                        clean_loss_dict[key] = round(value.item(), 6)
-                    else:
-                        clean_loss_dict[key] = round(value, 6)
-                logger.info(clean_loss_dict)
-                
-                # 记录到wandb
-                if opt.use_wandb and wandb_available:
-                    # 将损失字典中的键名转换为wandb友好的格式
-                    wandb_loss_dict = {}
+
+            # 只有在累积完成后才记录损失和更新进度条显示
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                if (current_iter+1)%opt.print_fq == 0:
+                    # 记录简洁的训练损失到日志文件
+                    clean_loss_dict = {}
                     for key, value in loss_dict.items():
-                        wandb_loss_dict[f"train/{key}"] = value.item() if hasattr(value, 'item') else value
-                    wandb.log(wandb_loss_dict, step=current_iter)
-                # 更新进度条显示
-                progress_bar.set_postfix(**clean_loss_dict)         
+                        if hasattr(value, 'item'):
+                            clean_loss_dict[key] = round(value.item(), 6)
+                        else:
+                            clean_loss_dict[key] = round(value, 6)
+                    logger.info(clean_loss_dict)
+
+                    # 记录到wandb
+                    if opt.use_wandb and wandb_available:
+                        # 将损失字典中的键名转换为wandb友好的格式
+                        wandb_loss_dict = {}
+                        for key, value in loss_dict.items():
+                            wandb_loss_dict[f"train/{key}"] = value.item() if hasattr(value, 'item') else value
+                        wandb.log(wandb_loss_dict, step=current_iter)
+                    # 更新进度条显示
+                    progress_bar.set_postfix(**clean_loss_dict)         
 
 
             # save checkpoint
