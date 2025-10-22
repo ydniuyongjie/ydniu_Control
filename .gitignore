@@ -140,4 +140,4 @@ laion_aesthetics_metadata/
 laion_aesthetics_v2__images/
 laion_aesthetics_v2_6.5_images/
 laion_depth_training/*
-
+data/
