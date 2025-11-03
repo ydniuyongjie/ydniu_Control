@@ -1,4 +1,4 @@
-name: train_depth
+name: train_depth_std123_niu
 model:
   base_learning_rate: 1.0e-04
   target: ldm.models.diffusion.ddpm.LatentDiffusion
@@ -28,7 +28,7 @@ model:
         f_min: [ 1. ]
 
     unet_config:
-      target: ldm.modules.diffusionmodules.openaimodel.UNetModel_STD
+      target: ldm.modules.diffusionmodules.openaimodel_niu.UNetModel
       params:
         image_size: 32 # unused
         in_channels: 4
@@ -86,4 +86,3 @@ training:
   lr: !!float 1e-5
   save_freq: 1e4
   gradient_accumulation_steps: 1  # 不使用梯度累积
-  

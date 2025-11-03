@@ -3,6 +3,8 @@ import logging
 import math
 import numpy as np
 import os
+import torch.nn as nn
+import itertools
 import cv2
 import os.path as osp
 import torch
@@ -24,15 +26,29 @@ except ImportError:
 from basicsr.utils import (get_env_info, get_root_logger, get_time_str,
                            img2tensor, scandir, tensor2img)
 from basicsr.utils.options import copy_opt_file, dict2str
+from omegaconf import OmegaConf
+from PIL import Image
+
+from ldm.data.dataset_depth import DepthDataset
 from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.models.diffusion.ddim_niu import DDIMSamplerNIU  # 添加新的采样器
 from ldm.models.diffusion.dpm_solver import DPMSolverSampler
 from ldm.models.diffusion.plms import PLMSSampler
-from omegaconf import OmegaConf
-from ldm.util import instantiate_from_config
-from ldm.data.dataset_depth import DepthDataset
-from basicsr.utils.dist_util import get_dist_info, init_dist, master_only
 from ldm.modules.encoders.adapter import Adapter
-from ldm.util import load_model_from_config as load_sd_model_from_config
+from ldm.util import instantiate_from_config
+from ldm.modules.extra_condition.model_edge import pidinet
+from tutorial_dataset import MyDataset
+from ldm.modules.diffusionmodules.ControlInjectionBlock import ControlInjectionBlock
+
+# 添加深度估计相关导入
+try:
+    import transformers
+    from transformers import pipeline
+    DEPTH_ESTIMATOR_AVAILABLE = True
+except ImportError:
+    print("Warning: transformers not available. Depth estimation will be disabled.")
+    DEPTH_ESTIMATOR_AVAILABLE = False
+
 # 添加wandb导入
 try:
     import wandb
@@ -40,147 +56,10 @@ try:
 except ImportError:
     wandb_available = False
 
-# 检查Depth Anything V2是否可用于深度图提取
-# 重要：数据集中的深度图使用Depth Anything V2生成，验证也必须使用相同模型
-try:
-    import sys
-    depth_anything_path = "/home/tniuyj/code/Depth-Anything-V2"
-    if depth_anything_path not in sys.path:
-        sys.path.insert(0, depth_anything_path)
-    from depth_anything_v2.dpt import DepthAnythingV2
-    DEPTH_ANYTHING_V2_AVAILABLE = True
-    print("✅ Depth Anything V2 可用于深度图提取验证")
-    print("注意：使用与数据集生成相同的深度估计模型确保一致性")
-except ImportError as e:
-    print(f"❌ 无法导入Depth Anything V2用于验证: {e}")
-    print("错误：无法找到与数据集匹配的深度估计模型")
-    DEPTH_ANYTHING_V2_AVAILABLE = False
-
-def initialize_depth_estimator(weight_path="depth_weight/depth_anything_v2_vitl.pth"):
-    """
-    初始化Depth Anything V2深度图估计器用于验证
-
-    重要说明：
-    - 数据集中的深度图使用Depth Anything V2生成
-    - 验证必须使用相同的模型以确保一致性
-    - 自动选择GPU/CPU模式以获得最佳性能
-    """
-    if not DEPTH_ANYTHING_V2_AVAILABLE:
-        print("❌ Depth Anything V2不可用，无法进行深度一致性验证")
-        print("   原因：数据集使用Depth Anything V2生成深度图，验证也必须使用相同模型")
-        return None
-
-    # 检查权重文件是否存在
-    if not os.path.exists(weight_path):
-        print(f"❌ 深度估计器权重文件不存在: {weight_path}")
-        print("   请确保Depth Anything V2权重文件存在")
-        return None
-
-    try:
-        print("初始化Depth Anything V2深度图估计器...")
-        print(f"配置: ViT-Large encoder, 与数据集生成配置一致")
-        print(f"权重: {weight_path}")
-
-        model = DepthAnythingV2(
-            encoder='vitl',  # ViT-Large，与数据集生成时使用相同的编码器
-            features=256,
-            out_channels=[256, 512, 1024, 1024]
-        )
-
-        # 加载权重到CPU，避免占用GPU资源
-        print("加载权重文件...")
-        checkpoint = torch.load(weight_path, map_location="cpu")
-        model.load_state_dict(checkpoint)
-
-        # 使用GPU模式进行验证，提高验证效率
-        if torch.cuda.is_available():
-            model.cuda()
-            print("   使用GPU加速深度图提取")
-        else:
-            model.cpu()
-            print("   使用CPU进行深度图提取")
-
-        model.eval()
-
-        print("✅ Depth Anything V2深度估计器初始化成功")
-        print("   模型将与数据集使用相同的深度估计配置，确保验证一致性")
-        return model
-    except Exception as e:
-        print(f"❌ Depth Anything V2深度估计器初始化失败: {e}")
-        print("   无法进行深度一致性验证，将回退到图像相似性验证")
-        return None
-
-def extract_depth_from_image(depth_estimator, image):
-    """
-    使用Depth Anything V2从生成图像中提取深度图
-
-    重要说明：
-    - 使用与数据集生成相同的Depth Anything V2模型
-    - 确保验证的一致性和准确性
-
-    Args:
-        depth_estimator: Depth Anything V2深度估计模型
-        image: 输入图像 (numpy array, HWC, BGR格式, 0-255)
-
-    Returns:
-        depth_map: 深度图 (numpy array, HW, 0-255)
-    """
-    if depth_estimator is None:
-        print("⚠️ Depth Anything V2深度估计器不可用，返回空深度图")
-        return np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-
-    try:
-        # 确保图像格式正确（BGR uint8格式，Depth Anything V2的输入要求）
-        if image.dtype != np.uint8:
-            image = (image * 255).astype(np.uint8) if image.max() <= 1.0 else image.astype(np.uint8)
-
-        # 使用Depth Anything V2生成深度图
-        # 与数据集生成时使用完全相同的处理方式
-        with torch.no_grad():
-            depth = depth_estimator.infer_image(image)  # HxW raw depth map
-
-        # 归一化到0-255范围，与数据集处理方式保持一致
-        depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
-        depth = (depth * 255).astype(np.uint8)
-
-        return depth
-    except Exception as e:
-        print(f"❌ Depth Anything V2深度图提取失败: {e}")
-        print("   将返回空深度图，验证结果可能不准确")
-        return np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
-
-def calculate_gradient(image):
-    """
-    计算图像的梯度
-
-    Args:
-        image: 输入图像 (numpy array, HW, 0-255)
-
-    Returns:
-        gradient: 梯度幅值 (numpy array, HW, 0-255)
-    """
-    try:
-        # 转换为float类型并归一化到[0,1]
-        img_float = image.astype(np.float32) / 255.0
-
-        # 计算x和y方向的梯度
-        grad_x = cv2.Sobel(img_float, cv2.CV_64F, 1, 0, ksize=3)
-        grad_y = cv2.Sobel(img_float, cv2.CV_64F, 0, 1, ksize=3)
-
-        # 计算梯度幅值
-        gradient = np.sqrt(grad_x**2 + grad_y**2)
-
-        # 归一化到0-255范围
-        gradient = (gradient / (gradient.max() + 1e-8)) * 255
-
-        return gradient.astype(np.uint8)
-    except Exception as e:
-        print(f"梯度计算失败: {e}")
-        return np.zeros_like(image)
 
 def load_model_from_config(config, ckpt, verbose=False):
     print(f"Loading model from {ckpt}")
-    pl_sd = torch.load(ckpt, map_location="cpu", weights_only=False)
+    pl_sd = torch.load(ckpt, map_location="cpu",weights_only=False)
     if "global_step" in pl_sd:
         print(f"Global Step: {pl_sd['global_step']}")
     sd = pl_sd["state_dict"]
@@ -241,6 +120,8 @@ def load_resume_state(opt):
             if 'model_ad_best.pth' in best_ckpt_files:
                 best_ckpt_path = osp.join(result_ckpt_path, 'model_ad_best.pth')
 
+    device_id = torch.cuda.current_device()  # 获取当前GPU设备ID
+
     if resume_state_path is None:
         resume_state = None
     if resume_ckpt_path is None:
@@ -248,7 +129,6 @@ def load_resume_state(opt):
     if best_ckpt_path is None:
         best_ckpt = None
     else:
-        device_id = torch.cuda.current_device()
         if resume_state_path is not None:
             resume_state = torch.load(resume_state_path, map_location=lambda storage, loc: storage.cuda(device_id), weights_only=False)
         else:
@@ -266,9 +146,38 @@ def load_resume_state(opt):
         # check_resume(opt, resume_state['iter'])
     return resume_state, resume_ckpt, best_ckpt
 
+def extract_depth_from_image(depth_estimator, image):
+    """
+    从生成图像中提取深度图（与train_depth.py保持一致）
+
+    Args:
+        depth_estimator: 深度估计模型
+        image: 输入图像 (numpy array, HWC, 0-255)
+
+    Returns:
+        depth_map: 深度图 (numpy array, HW, 0-255)
+    """
+    try:
+        # 转换为PIL图像
+        pil_image = Image.fromarray(image)
+
+        # 使用深度估计管道
+        depth = depth_estimator(pil_image)
+        depth_array = np.array(depth)
+
+        # 归一化到0-255范围
+        if depth_array.max() > depth_array.min():
+            depth_array = (depth_array - depth_array.min()) / (depth_array.max() - depth_array.min())
+        depth_array = (depth_array * 255).astype(np.uint8)
+
+        return depth_array
+    except Exception as e:
+        print(f"深度提取失败: {e}")
+        return np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+
 def calculate_depth_consistency_metrics(generated_depth, original_depth, generated_img=None, target_img=None):
     """
-    计算生成图像深度图与原始深度图的一致性指标
+    计算生成图像深度图与原始深度图的一致性指标（与train_depth.py完全一致）
 
     深度一致性指标说明：
     - Score_SSIM: 深度结构相似性分数，范围[0,1]，越接近1表示深度结构越相似
@@ -368,13 +277,13 @@ def calculate_depth_consistency_metrics(generated_depth, original_depth, generat
         # 返回默认值
         metrics = {
             'score_ssim': None,
-            'score_mae': 0.0,
-            'score_grad_mae': 0.0,
-            'score_lpips': 0.0,
-            'composite_score': 0.0,
-            'mae': 255.0,
-            'grad_mae': 255.0,
+            'score_mae': None,
+            'mae': None,
+            'score_grad_mae': None,
+            'grad_mae': None,
+            'score_lpips': None,
             'lpips_value': None,
+            'composite_score': 0.0,
             'interpretation': {
                 'score_ssim': "深度结构相似性，>0.65为较好",
                 'score_mae': "深度误差相似性，>0.8为较好",
@@ -386,12 +295,38 @@ def calculate_depth_consistency_metrics(generated_depth, original_depth, generat
 
     return metrics
 
+def calculate_gradient(image):
+    """
+    计算图像的梯度
+
+    Args:
+        image: 输入图像 (numpy array, HW, 0-255)
+
+    Returns:
+        gradient: 梯度幅值 (numpy array, HW, 0-255)
+    """
+    try:
+        # 转换为float类型并归一化到[0,1]
+        img_float = image.astype(np.float32) / 255.0
+
+        # 计算x和y方向的梯度
+        grad_x = cv2.Sobel(img_float, cv2.CV_64F, 1, 0, ksize=3)
+        grad_y = cv2.Sobel(img_float, cv2.CV_64F, 0, 1, ksize=3)
+
+        # 计算梯度幅值
+        gradient = np.sqrt(grad_x**2 + grad_y**2)
+
+        # 归一化到0-255范围
+        gradient = (gradient / (gradient.max() + 1e-8)) * 255
+
+        return gradient.astype(np.uint8)
+    except Exception as e:
+        print(f"梯度计算失败: {e}")
+        return np.zeros_like(image)
+
 def calculate_image_quality_metrics(generated_img, target_img):
     """
-    计算生成图像与目标图像的质量指标（保留用于向后兼容）
-
-    注意：这个函数已被calculate_depth_consistency_metrics取代，
-    现在应该使用深度图一致性评估而不是图像相似性评估
+    计算生成图像与目标图像的质量指标
 
     Args:
         generated_img: 生成的图像 (numpy array, HWC, 0-255)
@@ -400,9 +335,6 @@ def calculate_image_quality_metrics(generated_img, target_img):
     Returns:
         metrics: 包含各种质量指标的字典
     """
-    print("警告：使用了已弃用的calculate_image_quality_metrics函数")
-    print("建议：使用calculate_depth_consistency_metrics进行深度一致性评估")
-
     metrics = {}
 
     try:
@@ -414,11 +346,6 @@ def calculate_image_quality_metrics(generated_img, target_img):
         if SSIM_AVAILABLE:
             ssim_score = ssim(generated_img, target_img, multichannel=True, channel_axis=2, data_range=255)
             metrics['ssim'] = float(ssim_score)
-
-        # 计算PSNR
-        if SSIM_AVAILABLE:
-            psnr_score = psnr(generated_img, target_img, data_range=255)
-            metrics['psnr'] = float(psnr_score)
 
         # 计算LPIPS
         if LPIPS_AVAILABLE:
@@ -439,17 +366,37 @@ def calculate_image_quality_metrics(generated_img, target_img):
                 print(f"Warning: LPIPS calculation failed: {e}")
                 metrics['lpips'] = None
 
-        # 计算MSE
-        mse = np.mean((generated_img.astype(float) - target_img.astype(float)) ** 2)
-        metrics['mse'] = float(mse)
-
         # 计算MAE
         mae = np.mean(np.abs(generated_img.astype(float) - target_img.astype(float)))
         metrics['mae'] = float(mae)
 
+        # 计算梯度MAE (结构感知指标)
+        try:
+            # 转换为灰度图进行梯度计算
+            gen_gray = cv2.cvtColor(generated_img, cv2.COLOR_BGR2GRAY)
+            target_gray = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+
+            # 计算梯度
+            gen_gradient = calculate_gradient(gen_gray)
+            target_gradient = calculate_gradient(target_gray)
+
+            # 计算梯度MAE
+            grad_mae = np.mean(np.abs(gen_gradient.astype(np.float32) - target_gradient.astype(np.float32)))
+            score_grad_mae = 1.0 / (1.0 + grad_mae)  # Score_GradMAE = 1 / (1 + MAE(Grad(D), Grad(D_gen)))
+            metrics['score_grad_mae'] = float(score_grad_mae)
+            metrics['grad_mae'] = float(grad_mae)  # 保留原始梯度MAE值用于参考
+
+        except Exception as e:
+            print(f"Warning: GradMAE calculation failed: {e}")
+            metrics['score_grad_mae'] = None
+            metrics['grad_mae'] = None
+
     except Exception as e:
         print(f"Error calculating image quality metrics: {e}")
-        metrics = {'ssim': None, 'psnr': None, 'lpips': None, 'mse': None, 'mae': None}
+        metrics = {
+            'ssim': None, 'lpips': None, 'mae': None,
+            'score_grad_mae': None, 'grad_mae': None
+        }
 
     return metrics
 
@@ -484,7 +431,6 @@ def calculate_composite_score(metrics):
 
     # 检查可用的指标
     has_ssim = metrics.get('ssim') is not None
-    has_psnr = metrics.get('psnr') is not None
     has_lpips = metrics.get('lpips') is not None
 
     # 使用与深度一致性评分一致的权重分配（方案C：结构感知并重）
@@ -506,6 +452,12 @@ def calculate_composite_score(metrics):
         score += mae_score * mae_weight
         count += mae_weight
 
+    # GradMAE权重（0-∞，越低越好） - 对应Score_GradMAE
+    if metrics.get('score_grad_mae') is not None:
+        # 直接使用已经计算好的Score_GradMAE
+        score += metrics['score_grad_mae'] * grad_mae_weight
+        count += grad_mae_weight
+
     # LPIPS权重（0-1，越低越好） - 对应Score_LPIPS
     if has_lpips:
         # 使用Score_LPIPS = 1 / (1 + LPIPS_value)转换公式
@@ -513,183 +465,161 @@ def calculate_composite_score(metrics):
         score += lpips_score * lpips_weight
         count += lpips_weight
 
-    # 如果没有高级指标，使用MSE的倒数作为简单评分
-    if count == 0 and metrics.get('mse') is not None:
-        score = 1 / (1 + metrics['mse'])  # MSE越低，分数越高
-        count = 1
-
+    # 如果没有高级指标，使用默认分数
     return score if count > 0 else 0.0
 
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--bsize",
-        type=int,
-        default=6,
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=4,
-    )
-    parser.add_argument(
-        "--val_iter",
-        type=int,
-        default=2000,
-        help="validation frequency"
-        )
-    parser.add_argument(
-        "--print_fq",
-        type=int,
-        default=100,
-        help="Frequency of training information output",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=8,
-    )
-    parser.add_argument(
-        "--use_shuffle",
-        type=bool,
-        default=True,
-        help="the prompt to render"
-        )
-    parser.add_argument(
+parser = argparse.ArgumentParser()
+parser.add_argument(
+    "--bsize",
+    type=int,
+    default=6,
+    help="Batch size during training"
+)
+parser.add_argument(
+    "--epochs",
+    type=int,
+    default=4,
+    help="Epochs during training"
+)
+parser.add_argument(
+    "--val_iter",
+    type=int,
+    default=2000,
+    help="validation frequency"
+)
+parser.add_argument(
+    "--num_workers",
+    type=int,
+    default=8,
+    help="the prompt to render"
+)
+parser.add_argument(
+    "--use_shuffle",
+    type=bool,
+    default=True,
+    help="the prompt to render"
+)
+parser.add_argument(
         "--dpm_solver",
         action='store_true',
         help="use dpm_solver sampling,DPM (Diffusion Probabilistic Models) Solver 是一种用于扩散模型采样的快速算法",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         "--plms",
         action='store_true',
         help="use plms sampling",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         "--auto_resume",
-        action='store_true',
+        default=True,
         help="resume training if last checkpoint is available",
-        )
-    parser.add_argument(
-        "--ddim_steps",
-        type=int,
-        default=50,
-        help="number of ddim sampling steps",
-    )
-    parser.add_argument(
-        "--ddim_eta",
-        type=float,
-        default=0.0,
-        help="ddim eta (eta=0.0 corresponds to deterministic sampling",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         "--ckpt",
         type=str,
         default="models/v1-5-pruned-emaonly.ckpt",
         help="path to checkpoint of model",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         "--config",
         type=str,
-        default="configs/stable-diffusion/sd-v1-train.yaml",
+        default="configs/stable-diffusion/train_depth_std123_niu.yaml",
         help="path to config which constructs model",
-    )
-    parser.add_argument(
-        "--name",
-        type=str,
-        default="train_depth",
-        help="experiment name",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
+        "--print_fq",
+        type=int,
+        default=100,
+        help="Frequency of training information output",
+)
+parser.add_argument(
         "--H",
         type=int,
         default=512,
         help="image height, in pixel space",
-    )
-    parser.add_argument(
-        "--W",
-        type=int,
-        default=512,
-        help="image width, in pixel space",
-    )
-    parser.add_argument(
-        "--C",
-        type=int,
-        default=4,
-        help="latent channels",
-    )
-    parser.add_argument(
-        "--f",
-        type=int,
-        default=8,
-        help="downsampling factor",
-    )
-    parser.add_argument(
-        "--sample_steps",
+)
+parser.add_argument(
+    "--W",
+    type=int,
+    default=512,
+    help="image width, in pixel space",
+)
+parser.add_argument(
+    "--C",
+    type=int,
+    default=4,
+    help="latent channels",
+)
+parser.add_argument(
+    "--f",
+    type=int,
+    default=8,
+    help="downsampling factor",
+)
+parser.add_argument(
+        "--ddim_steps",
         type=int,
         default=50,
         help="number of ddim sampling steps",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         "--n_samples",
         type=int,
         default=1,
         help="how many samples to produce for each given prompt. A.k.a. batch size",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
+        "--ddim_eta",
+        type=float,
+        default=0.0,
+        help="ddim eta (eta=0.0 corresponds to deterministic sampling",
+)
+parser.add_argument(
         "--scale",
         type=float,
         default=7.5,
         help="unconditional guidance scale: eps = eps(x, empty) + scale * (eps(x, cond) - eps(x, empty))",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         "--gpus",
         default=[0],
         help="gpu idx",
-    )
-    parser.add_argument(
+)
+parser.add_argument(
         '--use_wandb',
         action='store_true',
         help='enable wandb logging'
 )
-    parser.add_argument(
+parser.add_argument(
         '--wandb_project',
         type=str,
         default='t2i-adapter',
         help='wandb project name'
 )
-    parser.add_argument(
+parser.add_argument(
         '--wandb_entity',
         type=str,
         default='ydyongjieniu',
         help='wandb entity name'
 )
-    parser.add_argument(
+parser.add_argument(
         "--instance_name",
         type=str,
         default="default",
         help="Name of the instance in which the program runs, 'e.g.' prior_lora_cat_100_1(prior_adapter_obj_classnum_batch)",
     )
-    parser.add_argument(
-        '--local_rank',
-        default=0,
-        type=int,
-        help='node rank for distributed training'
-    )
-    parser.add_argument(
-        '--launcher',
-        default='pytorch',
-        type=str,
-        help='node rank for distributed training'
-    )
-    opt = parser.parse_args()
-    return opt
+# parser.add_argument(
+#         '--wandb_run_id',
+#         type=str,
+#         default='None',
+#         help='wandb run id (if not provided, wandb will generate a random one)'
+# )
+opt = parser.parse_args()
 
-
-def main():
-    opt = parse_args()
+if __name__ == '__main__':
+    # torch.manual_seed(42)
+    # random.seed(42)
+    # np.random.seed(42)
     config = OmegaConf.load(f"{opt.config}")
     opt.name = config['name']
 
@@ -709,7 +639,7 @@ def main():
                 config={
                     "batch_size": opt.bsize,
                     "epochs": opt.epochs,
-                    "learning_rate": config['training']['lr'],
+                    "learning_rate": config['training']['lr'],                   
                 }
             )
         else:
@@ -720,25 +650,45 @@ def main():
                 config={
                     "batch_size": opt.bsize,
                     "epochs": opt.epochs,
-                    "learning_rate": config['training']['lr'],
+                    "learning_rate": config['training']['lr'],                    
                 }
             )
-    # dataset
+
+    ################################################ dataset##################################################
+    # 使用深度数据集（与train_depth.py保持一致）
     train_dataset = DepthDataset('laion_depth_training/laion_depth.txt')
-    # train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+    val_dataset = train_dataset  # 暂时使用训练集作为验证集
     train_dataloader = torch.utils.data.DataLoader(
-        train_dataset,
-        batch_size=opt.bsize,
-        shuffle=True,#(train_sampler is None),
-        num_workers=opt.num_workers,
-        pin_memory=True
-        )#sampler=train_sampler
+            train_dataset,
+            batch_size=opt.bsize,
+            shuffle=True,
+            num_workers=opt.num_workers,
+            pin_memory=True)
+    # val_dataloader = torch.utils.data.DataLoader(
+    #         val_dataset,
+    #         batch_size=1,
+    #         shuffle=False,
+    #         num_workers=1,
+    #         pin_memory=False)
+    #-------------------------------------------------------------------
+    # use custom dataset by niuyongjie
+    # train_dataset = MyDataset()
+    # train_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=opt.bsize, shuffle=True, pin_memory=True)
+    # val_dataloader = torch.utils.data.DataLoader(train_dataset, num_workers=0, batch_size=1, shuffle=False, pin_memory=False)
+    #-------------------------------------------------------------------
+
+    # edge_generator
+    # net_G = pidinet()
+    # ckp = torch.load('models/table5_pidinet.pth', map_location='cpu')['state_dict']
+    # net_G.load_state_dict({k.replace('module.',''):v for k, v in ckp.items()})
+    # net_G.cuda()
 
     # stable diffusion
     model = load_model_from_config(config, f"{opt.ckpt}").to(device)
+    
     experiments_root = osp.join('experiments', opt.instance_name)
     mkdir_and_rename(experiments_root)
-    #验证数据
+    #验证数据（与train_depth.py保持一致）
     val_data = train_dataset[16]
     with torch.no_grad():
         # 将张量转换为numpy数组
@@ -751,7 +701,7 @@ def main():
         # 从RGB转换回BGR（因为OpenCV默认使用BGR）
         im_np = cv2.cvtColor(im_np, cv2.COLOR_RGB2BGR)
         # 保存图像
-        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'target.jpg'), im_np)
+        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'traget.jpg'), im_np)
         # 计算验证损失
         # edge = net_G(data['im'].cuda(non_blocking=True))[-1]
         # edge = edge>0.5
@@ -766,14 +716,14 @@ def main():
         # z = model.get_first_stage_encoding(z)
         features_adapter = None
         control_injectors = None
-        # features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0
+        # features_adapter = [f*0.0 if isinstance(f, torch.Tensor) else f for f in features_adapter] # features_adapter置为0.0      
         if opt.dpm_solver:
             sampler = DPMSolverSampler(model)
         elif opt.plms:
             sampler = PLMSSampler(model)
         else:
             # 使用新的采样器
-            sampler = DDIMSampler(model)
+            sampler = DDIMSamplerNIU(model)
         shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
         samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
                                             conditioning=c,
@@ -794,33 +744,36 @@ def main():
             img = x_sample.astype(np.uint8)
             img = cv2.putText(img.copy(), val_data['sentence'], (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
             cv2.imwrite(os.path.join(experiments_root, 'visualization', 'origin.png'), img[:,:,::-1])
-
+            
             # 如果启用了wandb，则将生成的图像记录到wandb
             if opt.use_wandb and wandb_available:
                 # 将生成的图像转换为wandb.Image格式
                 wandb_image = wandb.Image(
-                    img,
+                    img, 
                     caption=f"origin image from model")
                 wandb.log({
                     f"val/origin image": wandb_image
                 }, step=0)
-
     # depth encoder
     model_ad = Adapter(cin=3 * 64, channels=[320, 640, 1280, 1280][:4], nums_rb=2, ksize=1, sk=True, use_conv=False).to(device)
-
-    # 初始化深度估计器用于验证
-    depth_estimator = initialize_depth_estimator("depth_weight/depth_anything_v2_vitl.pth")
-    if depth_estimator is not None:
-        device_used = "GPU" if torch.cuda.is_available() and next(depth_estimator.parameters()).is_cuda else "CPU"
-        print(f"✅ 深度估计器已初始化（{device_used}模式），将用于深度一致性验证")
-    else:
-        print("⚠️ 深度估计器初始化失败，将回退到图像相似性验证")
+    
+    # Control Injection Blocks
+    adapter_channels = [320, 640, 1280, 1280][:4]  # 与Adapter通道数对应
+    control_injectors = nn.ModuleList(
+        ControlInjectionBlock(channels=ch, time_emb_dim=1280) for ch in adapter_channels
+    ).to(device)
 
     # optimizer
-    params = list(model_ad.parameters())
-    optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
+    trainable_params = itertools.chain(
+    model_ad.parameters(),
+    # model.model.diffusion_model.control_injectors.parameters() # 访问UNet内部的注入模块
+    control_injectors.parameters()  # 使用外部的control_injectors
+)
+    # params = list(model_ad.parameters())
+    # optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
+    optimizer = torch.optim.AdamW(trainable_params, lr=config['training']['lr'])
 
-    # 使用ReduceLROnPlateau调度器，当composite_score不再提升时降低学习率
+    # 使用ReduceLROnPlateau调度器，当composite_score不再提升时降低学习率（与train_depth.py保持一致）
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='max',           # 最大化composite_score
@@ -831,19 +784,17 @@ def main():
         threshold_mode='abs'  # 绝对阈值模式
     )
 
-    # 重新启用早停机制，基于图像质量评估
-    best_val_score = -float('inf')  # 越大越好（SSIM、PSNR）
-    worst_lpips = float('inf')      # 越小越好（LPIPS）
+    logger.info(f"  Learning rate scheduler = ReduceLROnPlateau (patience=5, factor=0.5, min_lr=1e-8)")
+
+    # 早停机制初始化
+    best_val_score = -float('inf')  # 越大越好（综合评分）
     patience = 20  # 早停耐心值
     patience_counter = 0  # 早停计数器
-    best_model_state = None  # 最佳模型状态
+    best_model_state = None  # 最佳Adapter模型状态
+    best_control_injectors_state = None  # 最佳ControlInjectionBlock模型状态
+    early_stop = False  # 早停标志
 
-    # 早停计算说明:
-    # - 数据集: 12000张图片, 批量大小: 6, 每epoch: 2000次迭代
-    # - 验证频率: 每2000次迭代 (每epoch验证一次)
-    # - 早停条件: 连续15次验证无改善 = 连续15个epoch无改善
-
-
+    
 
     # resume state
     resume_state, resume_ckpt, best_ckpt = load_resume_state(opt)
@@ -864,70 +815,70 @@ def main():
         logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
         logger.info(get_env_info())
         # logger.info(dict2str(config))
-        logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")
-
+        logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")   
+        
         start_epoch = resume_state['epoch']
-        current_iter = resume_state['iter'] # 实际迭代次数从恢复点开始计数
+        current_iter = resume_state['iter'] # 实际迭代次数从恢复点开始计数        
         # 加载优化器状态
         optimizer.load_state_dict(resume_state['optimizers'])
         logger.info("Training has resumed.So loaded optimizer state")
+
+        # 加载学习率调度器状态
+        if 'scheduler' in resume_state:
+            scheduler.load_state_dict(resume_state['scheduler'])
+            logger.info("Training has resumed.So loaded scheduler state")
+
         model_ad.load_state_dict(resume_ckpt)
         logger.info("Training has resumed.So Loaded model_ad state")
-
-        # 注释：暂时禁用早停相关参数的恢复
-        # if best_ckpt is not None:
-        #     # 如果有最佳模型，加载为最佳模型状态
-        #     best_model_state = best_ckpt
-        #     logger.info("Loaded best model state for early stopping")
-        #     # 设置一个合理的初始值，实际中应该保存和加载这个值
-        #     best_val_loss = 0.1
-        #     logger.info(f"Set initial best_val_loss for resumed training: {best_val_loss}")
-        # else:
-        #     logger.info("No best model found, starting with fresh early stopping parameters")
+        
+        # 加载ControlInjectionBlock权重
+        control_injectors_ckpt_path = resume_ckpt_path.replace('model_ad', 'model_control_injectors')
+        if os.path.exists(control_injectors_ckpt_path):
+            control_injectors_ckpt = torch.load(control_injectors_ckpt_path, map_location=lambda storage, loc: storage.cuda(device_id))
+            control_injectors.load_state_dict(control_injectors_ckpt)
+            logger.info("Training has resumed.So Loaded control_injectors state")
 
     # copy the yml file to the experiment root
     copy_opt_file(opt.config, experiments_root)
 
+    # 计算总批次数
     num_update_steps_per_epoch = math.ceil(len(train_dataloader)) #math.ceil(500)
-
+    
     # 显示训练信息
     logger.info("***** Running training *****")
     logger.info(f"  Num examples = {len(train_dataset)}")
     logger.info(f"  Num Epochs = {opt.epochs}")
-    logger.info(f"  Batch size per device = {opt.bsize}")
+    logger.info(f"  Instantaneous batch size per device = {opt.bsize}")
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {opt.bsize}")
     logger.info(f"  Total optimization steps = {num_update_steps_per_epoch * opt.epochs}")
-    logger.info(f"  Print frequency = {opt.print_fq}")
-    logger.info(f"  Starting current_iter = {current_iter}")
-    logger.info(f"  Initial learning rate = {optimizer.param_groups[0]['lr']:.2e}")
-    logger.info(f"  Learning rate scheduler = ReduceLROnPlateau (patience=5, factor=0.1, min_lr=1e-8)")
+
+    
     # 初始化进度条
     total_steps = num_update_steps_per_epoch * opt.epochs
     progress_bar = tqdm(
         range(0, total_steps),
         desc="Steps",
     )
+    
     # 如果是恢复训练，更新进度条的初始位置
     if current_iter > 0:
         progress_bar.update(current_iter)
         logger.info(f"Resuming training from iteration {current_iter}. Total iterations: {total_steps}. Remaining iterations: {total_steps - current_iter}")
     else:
         logger.info(f'Start training from epoch: {start_epoch}, iter: {current_iter}. Total iterations: {total_steps}')
-
-    # training
+    
+    # training    
     start_iter= current_iter - start_epoch * num_update_steps_per_epoch
-
-    # 训练循环，支持早停和梯度累积
-    early_stop = False
-    optimizer.zero_grad()  # 在开始时清零梯度
-
     for epoch in range(start_epoch, opt.epochs):
-        # train_dataloader.sampler.set_epoch(epoch)
-        # train
+        # train         
+        # from itertools import islice
         gen_image_count=0
-        for batch_idx, data in enumerate(train_dataloader):
+        for batch_idx, data in enumerate(train_dataloader):#enumerate(islice(train_dataloader, 500)):
+            # Skip batches if resuming from a specific iteration
+            # 跳过已完成的迭代（关键！恢复时避免重复训练）
             if epoch == start_epoch and batch_idx < start_iter:
                 continue
-
+                        
             with torch.no_grad():
                 depth_data = data['depth'].cuda(non_blocking=True)
                 c = model.get_learned_conditioning(data['sentence'])
@@ -937,7 +888,7 @@ def main():
             optimizer.zero_grad()
             model.zero_grad()
             features_adapter = model_ad(depth_data)
-            l_pixel, loss_dict = model(z, c=c, features_adapter=features_adapter)
+            l_pixel, loss_dict = model(z, c=c, features_adapter = features_adapter, control_injectors=control_injectors)
             l_pixel.backward()
             optimizer.step()
 
@@ -955,7 +906,7 @@ def main():
                     else:
                         clean_loss_dict[key] = round(value, 6)
                 logger.info(clean_loss_dict)
-
+                
                 # 记录到wandb
                 if opt.use_wandb and wandb_available:
                     # 将损失字典中的键名转换为wandb友好的格式
@@ -975,46 +926,56 @@ def main():
                 for key, param in state_dict.items():
                     save_dict[key] = param.cpu()
                 torch.save(save_dict, save_path)
-
-                # save state
+                
+                # 保存ControlInjectionBlock参数
+                save_filename = f'model_control_injectors_{current_iter}.pth'
+                save_path = os.path.join(experiments_root, 'models', save_filename)
+                state_dict = control_injectors.state_dict()
+                save_dict = {}
+                for key, param in state_dict.items():
+                    save_dict[key] = param.cpu()
+                torch.save(save_dict, save_path)
+            # save state
                 state = {'epoch': epoch,
                          'iter': current_iter,
-                         'optimizers': optimizer.state_dict()
+                         'optimizers': optimizer.state_dict(),
+                         'scheduler': scheduler.state_dict()
                          }
                 save_filename = f'{current_iter}.state'
                 save_path = os.path.join(experiments_root, 'training_states', save_filename)
                 torch.save(state, save_path)
-
+                
                 # 记录检查点保存信息到日志
-                logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter}")
-
+                logger.info(f"Saved checkpoint at epoch {epoch}, iter {current_iter}")                
+               
             # val
             if current_iter% opt.val_iter == 0:  # Always run validation for single GPU training
                 gen_image_count+=1
 
+                # 使用固定验证样本进行一致性评估（与train_depth.py保持一致）
                 val_data = train_dataset[16]
 
                 with torch.no_grad():
+                    # 处理验证数据（与train_depth.py保持一致）
                     depth_data = val_data['depth'].cuda(non_blocking=True)
                     c = model.get_learned_conditioning(val_data['sentence'])
-                    # 处理深度数据（类似sketch中的edge处理）
-                    depth_data=depth_data.unsqueeze(0)
+                    # 处理深度数据（类似train_depth.py的处理方式）
+                    depth_data = depth_data.unsqueeze(0)
                     features_adapter = model_ad(depth_data)
 
+                    # 生成图像进行质量评估
                     if opt.dpm_solver:
                         sampler = DPMSolverSampler(model)
                     elif opt.plms:
                         sampler = PLMSSampler(model)
                     else:
-                        sampler = DDIMSampler(model)
+                        sampler = DDIMSamplerNIU(model)
 
                     logger.info(f"Validation image shape: {val_data['im'].shape}")
-
                     # 保存深度图像用于可视化
                     depth_data_vis = val_data['depth'].cuda(non_blocking=True)
                     im_depth_vis = tensor2img(depth_data_vis)
                     cv2.imwrite(os.path.join(experiments_root, 'visualization', 'depth_%04d.png'%epoch), im_depth_vis)
-
                     # 如果启用了wandb，则将深度图像记录到wandb
                     if opt.use_wandb and wandb_available:
                         # 将深度图像转换为wandb.Image格式
@@ -1027,6 +988,7 @@ def main():
                         }, step=current_iter)
                     # 从随机噪声生成图像（与sketch验证逻辑一致）
                     shape = [opt.C, opt.H // opt.f, opt.W // opt.f]
+
                     samples_ddim, _ = sampler.sample(S=opt.ddim_steps,
                                                         conditioning=c,
                                                         batch_size=opt.n_samples,
@@ -1035,29 +997,41 @@ def main():
                                                         unconditional_guidance_scale=opt.scale,
                                                         unconditional_conditioning=model.get_learned_conditioning(opt.n_samples * [""]),
                                                         eta=opt.ddim_eta,
-                                                        x_T=None,  # 从随机噪声开始
-                                                        features_adapter=features_adapter)
+                                                        x_T=None,
+                                                        features_adapter=features_adapter,
+                                                        control_injectors=control_injectors)
+
                     x_samples_ddim = model.decode_first_stage(samples_ddim)
                     x_samples_ddim = torch.clamp((x_samples_ddim + 1.0) / 2.0, min=0.0, max=1.0)
                     x_samples_ddim = x_samples_ddim.cpu().permute(0, 2, 3, 1).numpy()
 
-                    # 获取原始深度图用于比较
+                    # 获取原始深度图用于比较（与train_depth.py保持一致）
                     original_depth = tensor2img(val_data['depth'])  # 获取原始深度图
                     original_depth = cv2.cvtColor(original_depth, cv2.COLOR_BGR2GRAY)  # 转为单通道
 
+                    # 初始化深度估计器（如果可用）
+                    depth_estimator = None
+                    if DEPTH_ESTIMATOR_AVAILABLE:
+                        try:
+                            depth_estimator = pipeline('depth-estimation', model='Intel/dpt-large')
+                        except Exception as e:
+                            print(f"Warning: Failed to load depth estimator: {e}")
+                            depth_estimator = None
+
+                    # 质量评估和早停判断
                     for id_sample, x_sample in enumerate(x_samples_ddim):
                         x_sample = 255.*x_sample
                         generated_img = x_sample.astype(np.uint8)
 
-                        # 从生成图像中提取深度图
+                        # 从生成图像中提取深度图（新的验证方式：比较生成图像的深度图与原始深度图）
                         if depth_estimator is not None:
-                            # 新的验证方式：比较生成图像的深度图与原始深度图
+                            # 获取生成图像的深度图
                             generated_depth = extract_depth_from_image(depth_estimator, generated_img)
 
                             # 获取目标图像用于Score_LPIPS计算
                             target_img = tensor2img(val_data['im'])
 
-                            # 计算深度一致性指标（包含Score_LPIPS）
+                            # 计算深度一致性指标（与train_depth.py保持一致）
                             metrics = calculate_depth_consistency_metrics(generated_depth, original_depth, generated_img, target_img)
 
                             # 保存深度图用于可视化
@@ -1074,63 +1048,81 @@ def main():
                                 wandb.log({
                                     f"val/depth_e{epoch:04d}_s{gen_image_count:04d}_{id_sample}": wandb_depth_comparison
                                 }, step=current_iter)
-                        else:
-                            # 回退到旧的验证方式：比较生成图像与目标图像
-                            target_img = tensor2img(val_data['im'])  # 获取目标图像
-                            metrics = calculate_image_quality_metrics(generated_img, target_img)
 
-                        # 记录指标到日志
-                        # 过滤掉interpretation字典，只显示数值指标
-                        display_metrics = {k: v for k, v in metrics.items() if k != 'interpretation'}
-                        metrics_str = ", ".join([f"{k}: {v:.4f}" if v is not None else f"{k}: N/A"
-                                                for k, v in display_metrics.items()])
+                            # 获取计算好的深度一致性指标
+                            depth_metrics = {}
+                            depth_metrics['score_ssim'] = metrics.get('score_ssim')
+                            depth_metrics['score_mae'] = metrics.get('score_mae')
+                            depth_metrics['score_grad_mae'] = metrics.get('score_grad_mae')
+                            depth_metrics['score_lpips'] = metrics.get('score_lpips')
+                            depth_metrics['composite_score'] = metrics.get('composite_score')
+                            depth_metrics['mae'] = metrics.get('mae')
+                            depth_metrics['grad_mae'] = metrics.get('grad_mae')
+                            depth_metrics['lpips_value'] = metrics.get('lpips_value')
+
+                            # 使用计算好的composite_score
+                            composite_score = metrics['composite_score']
+                        else:
+                            # 回退到旧的验证方式：比较生成图像与目标图像（不推荐）
+                            target_img = tensor2img(val_data['im'])
+
+                            # 计算图像质量指标
+                            image_metrics = calculate_image_quality_metrics(generated_img, target_img)
+
+                            # 计算综合评分
+                            composite_score = calculate_composite_score(image_metrics)
+
+                            # 创建兼容的深度指标格式
+                            depth_metrics = {}
+                            depth_metrics['score_ssim'] = image_metrics.get('ssim')
+                            if image_metrics.get('mae') is not None:
+                                score_mae = 1.0 / (1.0 + image_metrics['mae'])
+                                depth_metrics['score_mae'] = score_mae
+                                depth_metrics['mae'] = image_metrics['mae']
+                            depth_metrics['score_grad_mae'] = image_metrics.get('score_grad_mae')
+                            depth_metrics['grad_mae'] = image_metrics.get('grad_mae')
+                            if image_metrics.get('lpips') is not None:
+                                score_lpips = 1.0 / (1.0 + image_metrics['lpips'])
+                                depth_metrics['score_lpips'] = score_lpips
+                                depth_metrics['lpips_value'] = image_metrics['lpips']
+                            depth_metrics['composite_score'] = composite_score
+
+                            logger.warning("Warning: Using RGB image comparison instead of depth consistency. Install transformers for proper depth evaluation.")
+
+                        # 格式化指标字符串，按照train_depth.py的顺序
+                        metrics_parts = []
+                        for key, value in depth_metrics.items():
+                            if value is not None:
+                                metrics_parts.append(f"{key}: {value:.4f}")
+
+                        metrics_str = ", ".join(metrics_parts)
                         current_lr = optimizer.param_groups[0]['lr']
+
                         logger.info(f"=== Validation at iteration {current_iter} (第{gen_image_count}次验证) ===")
                         logger.info(f"Current learning rate: {current_lr:.2e}")
+                        logger.info(f"Depth consistency metrics - {metrics_str}")
 
-                        if depth_estimator is not None:
-                            logger.info(f"Depth consistency metrics - {metrics_str}")
-                            if 'interpretation' in metrics:
-                                logger.info("深度一致性指标解读:")
-                                for metric, interpretation in metrics['interpretation'].items():
-                                    logger.info(f"  {metric}: {interpretation}")
-                        else:
-                            logger.info(f"Image similarity metrics (回退模式) - {metrics_str}")
-                            logger.info("指标解读: SSIM>0.5较好, PSNR>30dB较好, LPIPS<0.2较好, MSE/MAE越低越好")
+                        # 添加深度一致性指标解读
+                        logger.info("深度一致性指标解读:")
+                        logger.info("  score_ssim: 深度结构相似性，>0.65为较好")
+                        logger.info("  score_mae: 深度误差相似性，>0.8为较好")
+                        logger.info("  score_grad_mae: 深度梯度相似性，>0.8为较好")
+                        logger.info("  score_lpips: 感知相似性，>0.7为较好")
+                        logger.info("  composite_score: 综合深度一致性，>0.7为较好")
 
-                        # 计算综合评分
-                        composite_score = calculate_composite_score(metrics)
-
-                        # 记录到wandb - 包含所有验证指标
+                        # 记录到wandb
                         if opt.use_wandb and wandb_available:
                             wandb_metrics = {}
-                            # 记录各个指标，过滤掉interpretation
-                            for k, v in metrics.items():
+                            for k, v in depth_metrics.items():
                                 if v is not None and k != 'interpretation':
-                                    if depth_estimator is not None:
-                                        # 深度一致性指标
-                                        wandb_metrics[f"val/depth_{k}"] = v
-                                    else:
-                                        # 图像相似性指标
-                                        wandb_metrics[f"val/{k}"] = v
-
-                            # 记录综合评分
-                            if depth_estimator is not None:
-                                wandb_metrics["val/depth_composite_score"] = composite_score
-                                wandb_metrics["val/depth_best_score"] = best_val_score
-                            else:
-                                wandb_metrics["val/composite_score"] = composite_score
-                                wandb_metrics["val/best_score"] = best_val_score
-
-                            # 记录patience信息
+                                    wandb_metrics[f"val/{k}"] = v
+                            wandb_metrics["val/composite_score"] = composite_score
+                            wandb_metrics["val/best_score"] = best_val_score
                             wandb_metrics["val/patience_counter"] = patience_counter
-                            # 记录当前学习率
-                            current_lr = optimizer.param_groups[0]['lr']
+                            # 使用已经计算过的当前学习率
                             wandb_metrics["train/learning_rate"] = current_lr
-
-                            # 记录验证模式
-                            wandb_metrics["val/validation_mode"] = "depth_consistency" if depth_estimator is not None else "image_similarity"
-
+                            # 添加权重使用说明
+                            wandb_metrics["info/weights_used"] = "ssim:35%, mae:10%, grad_mae:20%, lpips:35%"
                             wandb.log(wandb_metrics, step=current_iter)
 
                         # 早停判断和最佳模型保存
@@ -1139,8 +1131,9 @@ def main():
                             best_val_score = composite_score
                             patience_counter = 0
                             best_model_state = model_ad.state_dict().copy()
+                            best_control_injectors_state = control_injectors.state_dict().copy()
 
-                            # 保存最佳模型
+                            # 保存最佳Adapter模型
                             save_filename = 'model_ad_best.pth'
                             save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
                             save_dict = {}
@@ -1148,26 +1141,34 @@ def main():
                                 save_dict[key] = param.cpu()
                             torch.save(save_dict, save_path)
 
-                            validation_type = "深度一致性" if depth_estimator is not None else "图像相似性"
+                            # 保存最佳ControlInjectionBlock模型
+                            save_filename = 'model_control_injectors_best.pth'
+                            save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
+                            save_dict = {}
+                            for key, param in best_control_injectors_state.items():
+                                save_dict[key] = param.cpu()
+                            torch.save(save_dict, save_path)
+
+                            validation_type = "深度一致性"
                             logger.info(f"🎉 NEW BEST MODEL! iteration {current_iter} - {validation_type}评测得分: {composite_score:.4f}")
                             logger.info(f"✅ 最佳模型已保存到: model_ad_best.pth")
                         else:
                             # 性能没有改善，增加早停计数器
                             patience_counter += 1
-                            validation_type = "深度一致性" if depth_estimator is not None else "图像相似性"
+                            validation_type = "深度一致性"
                             logger.info(f"❌ Score not improved - iteration {current_iter}: {validation_type}评测得分 {composite_score:.4f}, Best: {best_val_score:.4f}")
-                            logger.info(f"Validation score did not improve. Patience counter: {patience_counter}/{patience}")
+                            logger.info(f"Validation score did not improve. Patience counter: {patience_counter}")
                             logger.info(f"早停说明: 连续{patience}次验证无改善将自动停止训练，当前第{patience_counter}次")
 
-                        # 检查是否需要早停
-                        if patience_counter >= patience:
-                            logger.info(f"Early stopping triggered after {patience} validations without improvement")
-                            logger.info(f"Best composite score: {best_val_score:.4f}")
-                            logger.info(f"训练已早停: 在连续{patience}次验证（约{patience * opt.val_iter}次迭代）中性能未提升")
-                            early_stop = True
-                            break
+                            # 检查是否需要早停
+                            if patience_counter >= patience:
+                                logger.info(f"Early stopping triggered after {patience} validations without improvement")
+                                logger.info(f"Best composite score: {best_val_score:.4f}")
+                                logger.info(f"训练已早停: 在连续{patience}次验证（约{patience * opt.val_iter}次迭代）中性能未提升")
+                                early_stop = True
+                                break
 
-                        # 学习率调度：使用ReduceLROnPlateau
+                        # 学习率调度：使用ReduceLROnPlateau（与train_depth.py保持一致）
                         old_lr = optimizer.param_groups[0]['lr']
                         scheduler.step(composite_score)  # 根据composite_score调整学习率
                         new_lr = optimizer.param_groups[0]['lr']
@@ -1176,54 +1177,62 @@ def main():
                         if new_lr != old_lr:
                             logger.info(f"🔽 学习率调整: {old_lr:.2e} → {new_lr:.2e} (iteration {current_iter})")
                             if opt.use_wandb and wandb_available:
+                                wandb_metrics = {}
                                 wandb_metrics["train/learning_rate"] = new_lr
+                                wandb.log(wandb_metrics, step=current_iter)
 
-                        # 只对第一个生成的样本进行后续处理（保存图像等）
-                        if id_sample == 0:
-                            img = cv2.putText(generated_img.copy(), val_data['sentence'], (10,30),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
-                            cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, gen_image_count)), img[:,:,::-1])
+                        # 保存生成的图像
+                        img = cv2.putText(generated_img.copy(), val_data['sentence'], (10,30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+                        cv2.imwrite(os.path.join(experiments_root, 'visualization', 'sample_e%04d_s%04d.png'%(epoch, gen_image_count)), img[:,:,::-1])
 
-                            # 如果启用了wandb，则将生成的图像记录到wandb
-                            if opt.use_wandb and wandb_available:
-                                wandb_image = wandb.Image(
-                                    img,
-                                    caption=f"Epoch {epoch} Sample {gen_image_count}: {val_data['sentence']}"
-                                )
-                                wandb.log({
-                                    f"val/generated_image_e{epoch:04d}_s{gen_image_count:04d}": wandb_image
-                                }, step=current_iter)
+                        # 如果启用了wandb，则将生成的图像记录到wandb
+                        if opt.use_wandb and wandb_available:
+                            wandb_image = wandb.Image(
+                                img,
+                                caption=f"Epoch {epoch} Sample {gen_image_count}: {val_data['sentence']}"
+                            )
+                            wandb.log({
+                                f"val/generated_image_e{epoch:04d}_s{gen_image_count:04d}": wandb_image
+                            }, step=current_iter)
+
+                        break  # 只处理第一个生成的样本
 
                     logger.info(f"Validation completed at epoch {epoch}, iter {current_iter}")
 
-
-            # 正常训练流程
-        # 检查是否早停，如果早停则跳出epoch循环
-        if early_stop:
-            break
-
-        # 记录当前epoch结束时的学习率
-        current_lr = optimizer.param_groups[0]['lr']
-        logger.info(f'Epoch {epoch} finished. Current learning rate: {current_lr:.2e}')
-
+            # 检查是否早停
+            if early_stop:
+                break            
     # 关闭进度条
     progress_bar.close()
-
     # 如果早停被触发，恢复最佳模型状态
-    if early_stop and best_model_state is not None:
+    if early_stop and best_model_state is not None and best_control_injectors_state is not None:
         model_ad.load_state_dict(best_model_state)
-        logger.info("Restored best model state for final saving")
+        control_injectors.load_state_dict(best_control_injectors_state)
+        logger.info("Restored best model states for final saving (Adapter + ControlInjectionBlock)")
 
     # 保存最终模型
-    if best_model_state is not None:
+    if best_model_state is not None and best_control_injectors_state is not None:
         # 如果有最佳模型，保存最佳模型作为最终模型
+        # 保存最佳Adapter模型
         save_filename = 'model_ad_final_best.pth'
         save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
         save_dict = {}
         for key, param in best_model_state.items():
             save_dict[key] = param.cpu()
         torch.save(save_dict, save_path)
-        logger.info(f"Saved best model as final model with composite score: {best_val_score:.4f}")
+
+        # 保存最佳ControlInjectionBlock模型
+        save_filename = 'model_control_injectors_final_best.pth'
+        save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
+        save_dict = {}
+        for key, param in best_control_injectors_state.items():
+            save_dict[key] = param.cpu()
+        torch.save(save_dict, save_path)
+
+        logger.info(f"✅ Saved best models as final models with composite score: {best_val_score:.4f}")
+        logger.info(f"   - Adapter: model_ad_final_best.pth")
+        logger.info(f"   - ControlInjectionBlock: model_control_injectors_final_best.pth")
     else:
         # 如果没有最佳模型（没有验证过），保存当前模型
         save_filename = 'model_ad_final.pth'
@@ -1233,11 +1242,16 @@ def main():
         for key, param in state_dict.items():
             save_dict[key] = param.cpu()
         torch.save(save_dict, save_path)
-        logger.info(f"Saved final model at the end of training")
+        logger.info(f"Saved current Adapter model at the end of training (no validation performed)")
+
+    # 保存ControlInjectionBlock最终参数
+    save_filename = 'model_control_injectors_final.pth'
+    save_path = os.path.join(experiments_root, 'result_ckpt', save_filename)
+    state_dict = control_injectors.state_dict()
+    save_dict = {}
+    for key, param in state_dict.items():
+        save_dict[key] = param.cpu()
+    torch.save(save_dict, save_path)
     # 结束wandb会话
     if opt.use_wandb and wandb_available:
         wandb.finish()
-
-
-if __name__ == '__main__':
-    main()

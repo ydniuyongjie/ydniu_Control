@@ -50,6 +50,20 @@
             ],
         },
         {
+            "name": "train_depth_niu",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_depth_niu.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--use_wandb",
+                "--instance_name",  "depth_std123_5e5_niu",
+                "--bsize",          "6",
+                "--ckpt",           "models/v1-5-pruned-emaonly.ckpt",
+                "--config",         "configs/stable-diffusion/train_depth_std123_niu.yaml",
+            ],
+        },
+        {
             "name": "train_depth_laion",
             "type": "debugpy",
             "request": "launch",
