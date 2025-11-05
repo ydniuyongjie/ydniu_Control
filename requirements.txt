@@ -1,0 +1,13 @@
+basicsr==1.4.2
+matplotlib==3.10.5
+numpy==1.26.4
+omegaconf==2.3.0
+opencv_python==4.7.0.72
+pytorch_lightning==2.5.3
+safetensors==0.3.1
+torch==2.6.0
+torchvision==0.21.0
+tqdm==4.67.1
+transformers==4.29.2
+xformers==0.0.29.post2
+wandb==0.21.1
