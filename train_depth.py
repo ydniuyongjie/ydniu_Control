@@ -424,7 +424,7 @@ def calculate_image_quality_metrics(generated_img, target_img):
         if LPIPS_AVAILABLE:
             try:
                 if not hasattr(calculate_image_quality_metrics, 'lpips_model'):
-                    calculate_image_quality_metrics.lpips_model = lpips.LPIPS(net='alex').cuda()
+                    calculate_image_quality_metrics.lpips_model = lpips.LPIPS(net='vgg').cuda()
 
                 gen_tensor = torch.from_numpy(generated_img).float().cuda() / 255.0
                 target_tensor = torch.from_numpy(target_img).float().cuda() / 255.0

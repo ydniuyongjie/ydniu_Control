@@ -40,14 +40,76 @@ from ldm.modules.extra_condition.model_edge import pidinet
 from tutorial_dataset import MyDataset
 from ldm.modules.diffusionmodules.ControlInjectionBlock import ControlInjectionBlock
 
-# 添加深度估计相关导入
+# 检查Depth Anything V2是否可用于深度图提取
+# 重要：数据集中的深度图使用Depth Anything V2生成，验证也必须使用相同模型
 try:
-    import transformers
-    from transformers import pipeline
-    DEPTH_ESTIMATOR_AVAILABLE = True
-except ImportError:
-    print("Warning: transformers not available. Depth estimation will be disabled.")
-    DEPTH_ESTIMATOR_AVAILABLE = False
+    import sys
+    depth_anything_path = "/home/tniuyj/code/Depth-Anything-V2"
+    if depth_anything_path not in sys.path:
+        sys.path.insert(0, depth_anything_path)
+    from depth_anything_v2.dpt import DepthAnythingV2
+    DEPTH_ANYTHING_V2_AVAILABLE = True
+    print("✅ Depth Anything V2 可用于深度图提取验证")
+    print("注意：使用与数据集生成相同的深度估计模型确保一致性")
+except ImportError as e:
+    print(f"❌ 无法导入Depth Anything V2用于验证: {e}")
+    print("错误：无法找到与数据集匹配的深度估计模型")
+    DEPTH_ANYTHING_V2_AVAILABLE = False
+
+def initialize_depth_estimator(weight_path="depth_weight/depth_anything_v2_vitl.pth"):
+    """
+    初始化Depth Anything V2深度图估计器用于验证
+
+    重要说明：
+    - 数据集中的深度图使用Depth Anything V2生成
+    - 验证必须使用相同的模型以确保一致性
+    - 自动选择GPU/CPU模式以获得最佳性能
+    """
+    if not DEPTH_ANYTHING_V2_AVAILABLE:
+        print("❌ Depth Anything V2不可用，无法进行深度一致性验证")
+        print("   原因：数据集使用Depth Anything V2生成深度图，验证也必须使用相同模型")
+        return None
+
+    # 检查权重文件是否存在
+    if not os.path.exists(weight_path):
+        print(f"❌ 深度估计器权重文件不存在: {weight_path}")
+        print("   请确保Depth Anything V2权重文件存在")
+        return None
+
+    try:
+        print("初始化Depth Anything V2深度图估计器...")
+        print("配置: ViT-Large encoder, 与数据集生成配置一致")
+        print(f"权重: {weight_path}")
+
+        model = DepthAnythingV2(
+            encoder='vitl',  # ViT-Large，与数据集生成时使用相同的编码器
+            features=256,
+            out_channels=[256, 512, 1024, 1024]
+        )
+
+        # 加载权重
+        checkpoint = torch.load(weight_path, map_location='cpu')
+        model.load_state_dict(checkpoint)
+
+        # 根据GPU可用性选择设备
+        if torch.cuda.is_available():
+            device = torch.device('cuda')
+            model = model.to(device)
+            print("   使用GPU加速深度图提取")
+        else:
+            device = torch.device('cpu')
+            model.cpu()
+            print("   使用CPU进行深度图提取")
+
+        model.eval()
+
+        print("✅ Depth Anything V2深度估计器初始化成功")
+        print("   模型将与数据集使用相同的深度估计配置，确保验证一致性")
+        return model
+    except Exception as e:
+        print(f"❌ Depth Anything V2深度估计器初始化失败: {e}")
+        print("   无法进行深度一致性验证，将回退到图像相似性验证")
+        return None
 
 # 添加wandb导入
 try:
@@ -148,31 +210,41 @@ def load_resume_state(opt):
 
 def extract_depth_from_image(depth_estimator, image):
     """
-    从生成图像中提取深度图（与train_depth.py保持一致）
+    使用Depth Anything V2从生成图像中提取深度图
+
+    重要说明：
+    - 使用与数据集生成相同的Depth Anything V2模型
+    - 确保验证的一致性和准确性
 
     Args:
-        depth_estimator: 深度估计模型
-        image: 输入图像 (numpy array, HWC, 0-255)
+        depth_estimator: Depth Anything V2深度估计模型
+        image: 输入图像 (numpy array, HWC, BGR格式, 0-255)
 
     Returns:
         depth_map: 深度图 (numpy array, HW, 0-255)
     """
+    if depth_estimator is None:
+        print("⚠️ Depth Anything V2深度估计器不可用，返回空深度图")
+        return np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+
     try:
-        # 转换为PIL图像
-        pil_image = Image.fromarray(image)
+        # 确保图像格式正确（BGR uint8格式，Depth Anything V2的输入要求）
+        if image.dtype != np.uint8:
+            image = (image * 255).astype(np.uint8) if image.max() <= 1.0 else image.astype(np.uint8)
 
-        # 使用深度估计管道
-        depth = depth_estimator(pil_image)
-        depth_array = np.array(depth)
+        # 使用Depth Anything V2生成深度图
+        # 与数据集生成时使用完全相同的处理方式
+        with torch.no_grad():
+            depth = depth_estimator.infer_image(image)  # HxW raw depth map
 
-        # 归一化到0-255范围
-        if depth_array.max() > depth_array.min():
-            depth_array = (depth_array - depth_array.min()) / (depth_array.max() - depth_array.min())
-        depth_array = (depth_array * 255).astype(np.uint8)
+        # 归一化到0-255范围，与数据集处理方式保持一致
+        depth = (depth - depth.min()) / (depth.max() - depth.min() + 1e-8)
+        depth = (depth * 255).astype(np.uint8)
 
-        return depth_array
+        return depth
     except Exception as e:
-        print(f"深度提取失败: {e}")
+        print(f"❌ Depth Anything V2深度图提取失败: {e}")
+        print("   将返回空深度图，验证结果可能不准确")
         return np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
 
 def calculate_depth_consistency_metrics(generated_depth, original_depth, generated_img=None, target_img=None):
@@ -351,7 +423,7 @@ def calculate_image_quality_metrics(generated_img, target_img):
         if LPIPS_AVAILABLE:
             try:
                 if not hasattr(calculate_image_quality_metrics, 'lpips_model'):
-                    calculate_image_quality_metrics.lpips_model = lpips.LPIPS(net='alex').cuda()
+                    calculate_image_quality_metrics.lpips_model = lpips.LPIPS(net='vgg').cuda()
 
                 gen_tensor = torch.from_numpy(generated_img).float().cuda() / 255.0
                 target_tensor = torch.from_numpy(target_img).float().cuda() / 255.0
@@ -756,6 +828,14 @@ if __name__ == '__main__':
                 }, step=0)
     # depth encoder
     model_ad = Adapter(cin=3 * 64, channels=[320, 640, 1280, 1280][:4], nums_rb=2, ksize=1, sk=True, use_conv=False).to(device)
+
+    # 初始化深度估计器用于验证
+    depth_estimator = initialize_depth_estimator("depth_weight/depth_anything_v2_vitl.pth")
+    if depth_estimator is not None:
+        device_used = "GPU" if torch.cuda.is_available() and next(depth_estimator.parameters()).is_cuda else "CPU"
+        print(f"✅ 深度估计器已初始化（{device_used}模式），将用于深度一致性验证")
+    else:
+        print("⚠️ 深度估计器初始化失败，将回退到图像相似性验证")
     
     # Control Injection Blocks
     adapter_channels = [320, 640, 1280, 1280][:4]  # 与Adapter通道数对应
@@ -784,8 +864,6 @@ if __name__ == '__main__':
         threshold_mode='abs'  # 绝对阈值模式
     )
 
-    logger.info(f"  Learning rate scheduler = ReduceLROnPlateau (patience=5, factor=0.5, min_lr=1e-8)")
-
     # 早停机制初始化
     best_val_score = -float('inf')  # 越大越好（综合评分）
     patience = 20  # 早停耐心值
@@ -798,27 +876,23 @@ if __name__ == '__main__':
 
     # resume state
     resume_state, resume_ckpt, best_ckpt = load_resume_state(opt)
+
+    # 初始化logger - 确保在所有分支中都能正确初始化
+    mkdir_and_rename(experiments_root)
+    log_file = osp.join(experiments_root, f"train_{opt.instance_name}_{get_time_str()}.log")
+    logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
+    logger.info(get_env_info())
+    logger.info(f"  Learning rate scheduler = ReduceLROnPlateau (patience=5, factor=0.5, min_lr=1e-8)")
+
     if resume_state is None or resume_ckpt is None:
-        mkdir_and_rename(experiments_root)
         start_epoch = 0
         current_iter = 0
-        # WARNING: should not use get_root_logger in the above codes, including the called functions
-        # Otherwise the logger will not be properly initialized
-        log_file = osp.join(experiments_root, f"train_{opt.instance_name}_{get_time_str()}.log")
-        logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
-        logger.info(get_env_info())
         # logger.info(dict2str(config))
-    if resume_state is not None and resume_ckpt is not None :
-        # WARNING: should not use get_root_logger in the above codes, including the called functions
-        # Otherwise the logger will not be properly initialized
-        log_file = osp.join(experiments_root, f"train_{opt.instance_name}_{get_time_str()}.log")
-        logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
-        logger.info(get_env_info())
-        # logger.info(dict2str(config))
-        logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")   
-        
+    else:
+        logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")
+
         start_epoch = resume_state['epoch']
-        current_iter = resume_state['iter'] # 实际迭代次数从恢复点开始计数        
+        current_iter = resume_state['iter'] # 实际迭代次数从恢复点开始计数
         # 加载优化器状态
         optimizer.load_state_dict(resume_state['optimizers'])
         logger.info("Training has resumed.So loaded optimizer state")
@@ -830,7 +904,7 @@ if __name__ == '__main__':
 
         model_ad.load_state_dict(resume_ckpt)
         logger.info("Training has resumed.So Loaded model_ad state")
-        
+
         # 加载ControlInjectionBlock权重
         control_injectors_ckpt_path = resume_ckpt_path.replace('model_ad', 'model_control_injectors')
         if os.path.exists(control_injectors_ckpt_path):
@@ -1009,14 +1083,7 @@ if __name__ == '__main__':
                     original_depth = tensor2img(val_data['depth'])  # 获取原始深度图
                     original_depth = cv2.cvtColor(original_depth, cv2.COLOR_BGR2GRAY)  # 转为单通道
 
-                    # 初始化深度估计器（如果可用）
-                    depth_estimator = None
-                    if DEPTH_ESTIMATOR_AVAILABLE:
-                        try:
-                            depth_estimator = pipeline('depth-estimation', model='Intel/dpt-large')
-                        except Exception as e:
-                            print(f"Warning: Failed to load depth estimator: {e}")
-                            depth_estimator = None
+                    # 深度估计器已在训练开始时初始化，直接使用
 
                     # 质量评估和早停判断
                     for id_sample, x_sample in enumerate(x_samples_ddim):
@@ -1087,7 +1154,7 @@ if __name__ == '__main__':
                                 depth_metrics['lpips_value'] = image_metrics['lpips']
                             depth_metrics['composite_score'] = composite_score
 
-                            logger.warning("Warning: Using RGB image comparison instead of depth consistency. Install transformers for proper depth evaluation.")
+                            logger.warning("Warning: Using RGB image comparison instead of depth consistency. Install Depth Anything V2 for proper depth evaluation.")
 
                         # 格式化指标字符串，按照train_depth.py的顺序
                         metrics_parts = []
