@@ -143,3 +143,4 @@ laion_depth_training/*
 data/
 depth_weight/
 Depth-Anything-V2/*
+data/*
