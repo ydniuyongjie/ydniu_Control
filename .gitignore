@@ -141,6 +141,7 @@ laion_aesthetics_v2__images/
 laion_aesthetics_v2_6.5_images/
 laion_depth_training/*
 data/
+data/labels.tsv
 depth_weight/
 Depth-Anything-V2/*
 data/*
