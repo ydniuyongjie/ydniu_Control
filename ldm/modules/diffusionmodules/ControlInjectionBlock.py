@@ -58,28 +58,28 @@ class ControlInjectionBlock(nn.Module):
         """
         # --- 步骤 0: 自适应实例归一化 (AdaIN) ---
         # 目标: 将controls的内容（结构）与h的风格（纹理）对齐。
-        # mean_h, std_h = torch.mean(h, dim=(1,2, 3), keepdim=True), torch.std(h, dim=(1,2, 3), keepdim=True)
-        # mean_control, std_control = torch.mean(controls, dim=(1,2, 3), keepdim=True), torch.std(controls, dim=(1,2, 3), keepdim=True)
+        mean_h, std_h = torch.mean(h, dim=(1,2, 3), keepdim=True), torch.std(h, dim=(1,2, 3), keepdim=True)
+        mean_control, std_control = torch.mean(controls, dim=(1,2, 3), keepdim=True), torch.std(controls, dim=(1,2, 3), keepdim=True)
 
         # 添加一个小的epsilon或使用torch.where来防止除以零的错误
-        # std_control = torch.where(std_control < 1e-6, torch.ones_like(std_control), std_control)
+        std_control = torch.where(std_control < 1e-6, torch.ones_like(std_control), std_control)
 
-        # aligned_controls = (controls - mean_control) / std_control * std_h + mean_h
+        aligned_controls = (controls - mean_control) / std_control * std_h + mean_h
 
         # --- 阶段一: 准备“弹药” (时间-通道调制) ---
         # 根据时间步emb，动态生成逐通道的FiLM参数
-        # film_params = self.film_mlp(emb)
+        film_params = self.film_mlp(emb)
         
         # 将输出切分为alpha_base和beta
-        # alpha_base, beta_t = torch.chunk(film_params, 2, dim=-1)
+        alpha_base, beta_t = torch.chunk(film_params, 2, dim=-1)
         
         # 关键技巧: alpha = alpha_base + 1，确保初始化时强度为1，加速稳定收敛
         # 调整形状为 (B, C, 1, 1) 以便进行广播操作
-        # alpha_t = alpha_base.view(-1, self.channels, 1, 1) + 1
-        # beta_t = beta_t.view(-1, self.channels, 1, 1)
+        alpha_t = alpha_base.view(-1, self.channels, 1, 1) + 1
+        beta_t = beta_t.view(-1, self.channels, 1, 1)
 
         # 对已对齐的控制信号进行完整的FiLM调制
-        # modulated_controls = aligned_controls * alpha_t + beta_t
+        modulated_controls = aligned_controls * alpha_t + beta_t
         # modulated_controls = controls * alpha_t + beta_t
 
         # --- 阶段二: 锁定“目标” (空间选择) ---
@@ -88,8 +88,8 @@ class ControlInjectionBlock(nn.Module):
 
         # --- 阶段三: 精确“打击” (最终融合) ---
         # 将调制好的控制信号，通过空间门控，只注入到需要它的地方
-        h_out = h + gate * controls
-        # h_out = h + modulated_controls
+        # h_out = h + gate * controls
+        h_out = h + gate * modulated_controls
         
         return h_out
 
