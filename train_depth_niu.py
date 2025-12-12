@@ -544,19 +544,19 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--bsize",
     type=int,
-    default=6,
+    default=4,
     help="Batch size during training"
 )
 parser.add_argument(
     "--epochs",
     type=int,
-    default=4,
+    default=2,
     help="Epochs during training"
 )
 parser.add_argument(
     "--val_iter",
     type=int,
-    default=2000,
+    default=2400,
     help="validation frequency"
 )
 parser.add_argument(
@@ -601,7 +601,7 @@ parser.add_argument(
 parser.add_argument(
         "--print_fq",
         type=int,
-        default=100,
+        default=80,
         help="Frequency of training information output",
 )
 parser.add_argument(
@@ -627,6 +627,12 @@ parser.add_argument(
     type=int,
     default=8,
     help="downsampling factor",
+)
+parser.add_argument(
+    "--grad_accum_steps",
+    type=int,
+    default=8,
+    help="gradient accumulation steps",
 )
 parser.add_argument(
         "--ddim_steps",
@@ -836,12 +842,81 @@ if __name__ == '__main__':
         print(f"✅ 深度估计器已初始化（{device_used}模式），将用于深度一致性验证")
     else:
         print("⚠️ 深度估计器初始化失败，将回退到图像相似性验证")
-    
+
     # Control Injection Blocks
     adapter_channels = [320, 640, 1280, 1280][:4]  # 与Adapter通道数对应
     control_injectors = nn.ModuleList(
         ControlInjectionBlock(channels=ch, time_emb_dim=1280) for ch in adapter_channels
     ).to(device)
+
+    # 模型参数量统计
+    def count_parameters(model):
+        """计算模型的参数量"""
+        return sum(p.numel() for p in model.parameters())
+
+    def count_trainable_parameters(model):
+        """计算可训练参数量"""
+        return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # 转换为百万参数单位
+    def params_to_millions(params):
+        return params / 1_000_000
+
+    # 计算各模型参数量
+    model_ad_params = count_parameters(model_ad)
+    model_ad_trainable_params = count_trainable_parameters(model_ad)
+
+    control_injectors_params = count_parameters(control_injectors)
+    control_injectors_trainable_params = count_trainable_parameters(control_injectors)
+
+    total_params = model_ad_params + control_injectors_params
+    total_trainable_params = model_ad_trainable_params + control_injectors_trainable_params
+
+    print("=" * 60)
+    print("📊 模型参数量统计")
+    print("=" * 60)
+    print(f"Adapter (model_ad):")
+    print(f"  - 总参数量: {model_ad_params:,} ({params_to_millions(model_ad_params):.2f}M)")
+    print(f"  - 可训练参数量: {model_ad_trainable_params:,} ({params_to_millions(model_ad_trainable_params):.2f}M)")
+    print(f"  - 参数占比: {model_ad_params / total_params * 100:.1f}%")
+    print()
+
+    print(f"ControlInjectionBlock (control_injectors):")
+    print(f"  - 总参数量: {control_injectors_params:,} ({params_to_millions(control_injectors_params):.2f}M)")
+    print(f"  - 可训练参数量: {control_injectors_trainable_params:,} ({params_to_millions(control_injectors_trainable_params):.2f}M)")
+    print(f"  - 参数占比: {control_injectors_params / total_params * 100:.1f}%")
+    print()
+
+    print(f"🎯 总计:")
+    print(f"  - 总参数量: {total_params:,} ({params_to_millions(total_params):.2f}M)")
+    print(f"  - 可训练参数量: {total_trainable_params:,} ({params_to_millions(total_trainable_params):.2f}M)")
+    print("=" * 60)
+
+    # 初始化logger - 确保在所有分支中都能正确初始化
+    mkdir_and_rename(experiments_root)
+    log_file = osp.join(experiments_root, f"train_{opt.instance_name}_{get_time_str()}.log")
+    logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
+
+    # 同时将参数量统计信息记录到日志文件
+    logger.info("=" * 60)
+    logger.info("📊 模型参数量统计")
+    logger.info("=" * 60)
+    logger.info(f"Adapter (model_ad):")
+    logger.info(f"  - 总参数量: {model_ad_params:,} ({params_to_millions(model_ad_params):.2f}M)")
+    logger.info(f"  - 可训练参数量: {model_ad_trainable_params:,} ({params_to_millions(model_ad_trainable_params):.2f}M)")
+    logger.info(f"  - 参数占比: {model_ad_params / total_params * 100:.1f}%")
+    logger.info("")
+
+    logger.info(f"ControlInjectionBlock (control_injectors):")
+    logger.info(f"  - 总参数量: {control_injectors_params:,} ({params_to_millions(control_injectors_params):.2f}M)")
+    logger.info(f"  - 可训练参数量: {control_injectors_trainable_params:,} ({params_to_millions(control_injectors_trainable_params):.2f}M)")
+    logger.info(f"  - 参数占比: {control_injectors_params / total_params * 100:.1f}%")
+    logger.info("")
+
+    logger.info(f"🎯 总计:")
+    logger.info(f"  - 总参数量: {total_params:,} ({params_to_millions(total_params):.2f}M)")
+    logger.info(f"  - 可训练参数量: {total_trainable_params:,} ({params_to_millions(total_trainable_params):.2f}M)")
+    logger.info("=" * 60)
 
     # optimizer
     trainable_params = itertools.chain(
@@ -853,16 +928,28 @@ if __name__ == '__main__':
     # optimizer = torch.optim.AdamW(params, lr=config['training']['lr'])
     optimizer = torch.optim.AdamW(trainable_params, lr=config['training']['lr'])
 
-    # 使用ReduceLROnPlateau调度器，当composite_score不再提升时降低学习率（与train_depth.py保持一致）
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='max',           # 最大化composite_score
-        factor=0.5,           # 学习率衰减因子，每次降为原来的0.5
-        patience=5,           # 早停耐心值的1/5，连续5次无改善则降低学习率
-        min_lr=1e-8,          # 最小学习率阈值
-        threshold=1e-6,       # 判断改善的最小阈值
-        threshold_mode='abs'  # 绝对阈值模式
+    # 预热参数
+    warmup_iterations = 7200  # 预热迭代次数（3次验证）
+    warmup_start_lr = 1e-7    # 预热起始学习率
+    base_lr = config['training']['lr']  # 目标学习率（5e-5）
+
+    # 创建Cosine Annealing Warm Restarts调度器 - 周期性重启策略
+    # 注意：考虑梯度累积（grad_accum_steps=8），实际的参数更新频率是每8次迭代一次
+    # T_0: 初始重启周期（20000次迭代=2500次参数更新），基于最佳性能点38400设计
+    # T_mult: 每次重启后周期倍数，让后续周期逐渐变长
+    # eta_min: 最小学习率，与之前保持一致
+    # 策略说明：T_0=20000次迭代，确保第2周期(20000-60000)完美覆盖最佳点38400
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer=optimizer,
+        T_0=2500,              # 2500次参数更新=20000次迭代，基于最佳点38400的策略设计
+        T_mult=2,              # 每次重启后周期倍数（必须是整数），确保第2周期覆盖最佳性能区间
+        eta_min=1e-7,          # 最小学习率
+        last_epoch=-1          # 从头开始训练
     )
+
+    # 设置初始学习率为预热起始值
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = warmup_start_lr
 
     # 早停机制初始化
     best_val_score = -float('inf')  # 越大越好（综合评分）
@@ -882,17 +969,23 @@ if __name__ == '__main__':
     log_file = osp.join(experiments_root, f"train_{opt.instance_name}_{get_time_str()}.log")
     logger = get_root_logger(logger_name='basicsr', log_level=logging.INFO, log_file=log_file)
     logger.info(get_env_info())
-    logger.info(f"  Learning rate scheduler = ReduceLROnPlateau (patience=5, factor=0.5, min_lr=1e-8)")
+    logger.info(f"  Learning rate scheduler = Linear Warmup + Cosine Annealing Warm Restarts")
+    logger.info(f"  - Warmup: {warmup_start_lr} → {base_lr} over {warmup_iterations} iterations (3 validations)")
+    logger.info(f"  - Cosine restart: T_0=2500 parameter updates, T_mult=2, eta_min=1e-7")
+    logger.info(f"  - Note: Considering gradient accumulation (grad_accum_steps=8), T_0=2500 updates = 20000 iterations")
+    logger.info(f"  - Periodic restarts every 20000, 60000... iterations (~8 validations per cycle)")
+    logger.info(f"  - Strategy: T_0=20000 iterations ensures best point 38400 sits in optimal LR range of cycle 2")
 
     if resume_state is None or resume_ckpt is None:
         start_epoch = 0
         current_iter = 0
+        optimization_step = 0  # 优化步数计数器（用于学习率调度）
         # logger.info(dict2str(config))
     else:
         logger.info(f"Resuming training from epoch: {resume_state['epoch']}, " f"iter: {resume_state['iter']}.")
-
         start_epoch = resume_state['epoch']
         current_iter = resume_state['iter'] # 实际迭代次数从恢复点开始计数
+        optimization_step = current_iter // opt.grad_accum_steps  # 根据总批次数计算优化步数 # 实际迭代次数从恢复点开始计数
         # 加载优化器状态
         optimizer.load_state_dict(resume_state['optimizers'])
         logger.info("Training has resumed.So loaded optimizer state")
@@ -900,7 +993,12 @@ if __name__ == '__main__':
         # 加载学习率调度器状态
         if 'scheduler' in resume_state:
             scheduler.load_state_dict(resume_state['scheduler'])
-            logger.info("Training has resumed.So loaded scheduler state")
+            logger.info("Training has resumed. Loaded Cosine Annealing Warm Restarts scheduler state")
+            logger.info(f"  Scheduler resumed from epoch {scheduler.last_epoch}")
+        else:
+            # 如果没有调度器状态，手动设置当前epoch
+            scheduler.last_epoch = optimization_step - 1  # 使用优化步数而不是迭代次数
+            logger.info(f"  Scheduler initialized to current optimization step {optimization_step}")
 
         model_ad.load_state_dict(resume_ckpt)
         logger.info("Training has resumed.So Loaded model_ad state")
@@ -966,10 +1064,26 @@ if __name__ == '__main__':
             l_pixel.backward()
             optimizer.step()
 
+            # 更新优化步数计数器
+            optimization_step += 1
+
+            # 预热结束后调用学习率调度器
+            if current_iter >= warmup_iterations:
+                scheduler.step()
+
             # 更新进度条
             progress_bar.update(1)
 
             current_iter += 1  # 递增迭代计数器
+
+            # 预热阶段学习率调整（在更新迭代次数之后，确保current_iter是正确的值）
+            if current_iter <= warmup_iterations:
+                # 线性预热：从warmup_start_lr到base_lr
+                warmup_progress = current_iter / warmup_iterations
+                warmup_lr = warmup_start_lr + (base_lr - warmup_start_lr) * warmup_progress
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = warmup_lr
+            # 预热结束后，不设置学习率，让调度器控制
 
             if current_iter%opt.print_fq == 0:
                 # 记录简洁的训练损失到日志文件
@@ -1235,18 +1349,52 @@ if __name__ == '__main__':
                                 early_stop = True
                                 break
 
-                        # 学习率调度：使用ReduceLROnPlateau（与train_depth.py保持一致）
-                        old_lr = optimizer.param_groups[0]['lr']
-                        scheduler.step(composite_score)  # 根据composite_score调整学习率
-                        new_lr = optimizer.param_groups[0]['lr']
+                        # 记录当前学习率信息
+                        current_lr = optimizer.param_groups[0]['lr']
 
-                        # 如果学习率发生变化，记录相关信息
-                        if new_lr != old_lr:
-                            logger.info(f"🔽 学习率调整: {old_lr:.2e} → {new_lr:.2e} (iteration {current_iter})")
-                            if opt.use_wandb and wandb_available:
-                                wandb_metrics = {}
-                                wandb_metrics["train/learning_rate"] = new_lr
-                                wandb.log(wandb_metrics, step=current_iter)
+                        if current_iter >= warmup_iterations:
+                            # 计算当前重启周期信息（预热结束后）
+                            # 从预热结束(7200)开始计算周期
+                            iter_since_warmup = current_iter - warmup_iterations
+
+                            # T_0 = 2500 参数更新 = 20000 迭代
+                            T_0_iterations = scheduler.T_0 * opt.grad_accum_steps  # 20000
+
+                            # 计算当前所在的周期
+                            current_restart_cycle = 0
+                            remaining_iter = iter_since_warmup
+                            cycle_length_updates = scheduler.T_0
+                            cycle_length_iterations = T_0_iterations
+
+                            while remaining_iter >= cycle_length_iterations:
+                                current_restart_cycle += 1
+                                remaining_iter -= cycle_length_iterations
+                                cycle_length_updates *= scheduler.T_mult
+                                cycle_length_iterations = cycle_length_updates * opt.grad_accum_steps
+
+                            # 计算当前周期的实际长度
+                            current_cycle_length = T_0_iterations * (scheduler.T_mult ** current_restart_cycle)
+
+                            # 计算当前周期内的进度
+                            cycle_start_iter = warmup_iterations + sum([T_0_iterations * (scheduler.T_mult ** i) for i in range(current_restart_cycle)])
+                            cycle_progress = (current_iter - cycle_start_iter) / current_cycle_length * 100
+
+                            logger.info(f"📊 当前学习率: {current_lr:.2e} (iteration {current_iter})")
+                            logger.info(f"🔄 Cosine信息: 第{current_restart_cycle + 1}个周期, 长度={current_cycle_length}次迭代, 进度={cycle_progress:.1f}%")
+                        else:
+                            # 预热阶段
+                            logger.info(f"📊 预热阶段学习率: {current_lr:.2e} (iteration {current_iter}/{warmup_iterations})")
+                            current_restart_cycle = 0
+                            cycle_length_iterations = 0
+
+                        # 记录学习率到wandb
+                        if opt.use_wandb and wandb_available:
+                            wandb_metrics = {}
+                            wandb_metrics["train/learning_rate"] = current_lr
+                            wandb_metrics["train/restart_cycle"] = current_restart_cycle
+                            wandb_metrics["train/cycle_length"] = current_cycle_length
+                            wandb_metrics["train/cycle_progress"] = cycle_progress
+                            wandb.log(wandb_metrics, step=current_iter)
 
                         # 保存生成的图像
                         img = cv2.putText(generated_img.copy(), val_data['sentence'], (10,30),

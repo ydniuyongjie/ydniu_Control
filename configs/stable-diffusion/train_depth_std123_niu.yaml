@@ -83,6 +83,6 @@ dist_params:
   backend: nccl
   port: 29500
 training:
-  lr: !!float 1e-5
+  lr: !!float 5e-5
   save_freq: 1e4
-  gradient_accumulation_steps: 1  # 不使用梯度累积
+  gradient_accumulation_steps: 8  # 梯度累积步数

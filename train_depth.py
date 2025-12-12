@@ -344,13 +344,13 @@ def calculate_depth_consistency_metrics(generated_depth, original_depth, generat
         metrics['score_lpips'] = float(score_lpips)
 
         # 计算综合分数 - 方案C：结构感知并重
-        # Composite_Score = (0.35 × Score_SSIM) + (0.1 × Score_MAE) + (0.2 × Score_GradMAE) + (0.35 × Score_LPIPS)
+        # Composite_Score = (0.4 × Score_SSIM) + (0.1 × Score_MAE) + (0.2 × Score_GradMAE) + (0.3 × Score_LPIPS)
         if metrics['score_ssim'] is not None:
-            composite_score = (0.35 * metrics['score_ssim']) + (0.1 * metrics['score_mae']) + (0.2 * metrics['score_grad_mae']) + (0.35 * metrics['score_lpips'])
+            composite_score = (0.4 * metrics['score_ssim']) + (0.1 * metrics['score_mae']) + (0.2 * metrics['score_grad_mae']) + (0.3 * metrics['score_lpips'])
         else:
-            # 如果SSIM不可用，重新分配权重：Score_MAE(0.154) + Score_GradMAE(0.308) + Score_LPIPS(0.538)
-            # 权重按原比例缩放：原权重0.1+0.2+0.35=0.65，缩放因子为1/0.65≈1.538
-            composite_score = (0.154 * metrics['score_mae']) + (0.308 * metrics['score_grad_mae']) + (0.538 * metrics['score_lpips'])
+            # 如果SSIM不可用，重新分配权重：Score_MAE(0.167) + Score_GradMAE(0.333) + Score_LPIPS(0.5)
+            # 权重按原比例缩放：原权重0.1+0.2+0.3=0.6，缩放因子为1/0.6≈1.667
+            composite_score = (0.167 * metrics['score_mae']) + (0.333 * metrics['score_grad_mae']) + (0.5 * metrics['score_lpips'])
 
         metrics['composite_score'] = float(composite_score)
 
@@ -424,7 +424,7 @@ def calculate_image_quality_metrics(generated_img, target_img):
         if LPIPS_AVAILABLE:
             try:
                 if not hasattr(calculate_image_quality_metrics, 'lpips_model'):
-                    calculate_image_quality_metrics.lpips_model = lpips.LPIPS(net='vgg').cuda()
+                    calculate_image_quality_metrics.lpips_model = lpips.LPIPS(net='alex').cuda()
 
                 gen_tensor = torch.from_numpy(generated_img).float().cuda() / 255.0
                 target_tensor = torch.from_numpy(target_img).float().cuda() / 255.0

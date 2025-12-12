@@ -64,6 +64,31 @@
             ],
         },
         {
+            "name": "train_depth_niu_dual",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "train_depth_dual_gpu.py",
+            "console": "integratedTerminal",
+            "env": {
+                "MASTER_ADDR": "localhost",
+                "MASTER_PORT": "12355",
+                "WORLD_SIZE": "2"
+            },
+            "args": [
+                "--config",         "configs/stable-diffusion/train_depth_std123_niu.yaml",
+                "--instance_name",  "depth_std_warm_alex_niu_dual",
+                "--bsize",          "4",
+                "--epochs",         "3",
+                "--val_iter",       "2000",
+                "--grad_accum_steps", "4",
+                "--ckpt",           "models/v1-5-pruned-emaonly.ckpt",
+                "--use_wandb",
+                "--wandb_project",  "t2i-adapter",
+                "--wandb_entity",  "ydyongjieniu",
+                "--use_shuffle",
+            ],
+        },
+        {
             "name": "train_depth_laion",
             "type": "debugpy",
             "request": "launch",

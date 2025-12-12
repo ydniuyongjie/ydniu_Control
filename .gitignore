@@ -145,3 +145,7 @@ data/labels.tsv
 depth_weight/
 Depth-Anything-V2/*
 data/*
+experiments/*
+laion_depth_training/*
+outputs/*
+wandb/*
