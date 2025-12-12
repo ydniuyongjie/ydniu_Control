@@ -88,7 +88,6 @@ class ControlInjectionBlock(nn.Module):
 
         # --- 阶段三: 精确“打击” (最终融合) ---
         # 将调制好的控制信号，通过空间门控，只注入到需要它的地方
-        # h_out = h + gate * controls
         h_out = h + gate * modulated_controls
         
         return h_out
