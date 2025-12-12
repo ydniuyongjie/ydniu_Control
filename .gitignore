@@ -148,4 +148,4 @@ data/*
 experiments/*
 laion_depth_training/*
 outputs/*
-wandb/*
+wandb/*data/labels.tsv
